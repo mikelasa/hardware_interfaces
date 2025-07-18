@@ -40,7 +40,7 @@ void ManipServer::robot_loop(const RUT::TimePoint& time0, int id) {
 
   bool ctrl_flag_saving = false;  // local copy
 
-  RUT::InterpolationController intp_controller;
+  RUT::TaskSpaceInterpolationController intp_controller;
   intp_controller.initialize(pose_fb, timer.toc_ms());
   std::cout << header << "intp_controller initialized with pose_fb: "
             << pose_fb.transpose() << std::endl;
@@ -298,7 +298,7 @@ void ManipServer::eoat_loop(const RUT::TimePoint& time0, int id) {
 
   bool ctrl_flag_saving = false;  // local copy
 
-  RUT::InterpolationController intp_controller;
+  RUT::TaskSpaceInterpolationController intp_controller;
   intp_controller.initialize(eoat_cmd, timer.toc_ms());
   std::cout << header
             << "intp_controller initialized with pos_fb: " << pos_fb.transpose()
