@@ -33,6 +33,7 @@ add_subdirectory(hardware/gopro)
 add_subdirectory(hardware/robotiq_ft_modbus)
 add_subdirectory(hardware/ur_rtde)
 add_subdirectory(hardware/wsg_gripper)
+add_subdirectory(hardware/franka)
 
 # workcell to build
 # include every "include" directory under /hardware/*
@@ -74,3 +75,4 @@ target_link_libraries(test_hardware_interfaces
   COIN_FT
   # spdlog::spdlog
 )
+
