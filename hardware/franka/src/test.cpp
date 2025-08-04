@@ -2,6 +2,7 @@
 #include "robot_impl.h"
 #include "lowpass_filter.h"
 #include "rate_limiting.h"
+#include "franka/model.h"
 #include <chrono>
 
 using namespace std::chrono;
@@ -34,9 +35,10 @@ int main() {
     research_interface::robot::MotionGeneratorCommand motion_command{};
     research_interface::robot::ControllerCommand control_command{};
     
+    double kDeltaT = 1e-3;
     
     // pick a test case to run with user input from prompt
-    int test_case = 7;
+    int test_case = 8;
 
     switch (test_case) {
         case 1:
@@ -266,6 +268,23 @@ int main() {
                     control_command.tau_J_d.fill(0.0);
                     control_command.tau_J_d[4] = torque;
 
+                    // Apply low-pass filter to the torque command
+                    for (size_t i = 0; i < 7; ++i) {
+                        control_command.tau_J_d[i] = franka::lowpassFilter(
+                            kDeltaT,
+                            control_command.tau_J_d[i],
+                            robot_state.tau_J_d[i],
+                            franka::kDefaultCutoffFrequency
+                        );
+                    }
+
+                    //rate limit the torque command
+                    control_command.tau_J_d = franka::limitRate(
+                        franka::kMaxTorqueRate,
+                        control_command.tau_J_d,
+                        robot_state.tau_J_d
+                    );
+
                     // Send command, receive updated state
                     robot_state = franka_robot.update(&motion_command, &control_command);
                     franka_robot.throwOnMotionError(robot_state, motion_id);
@@ -322,7 +341,6 @@ int main() {
                 franka::Duration previous_time = robot_state.time;
                 franka::Duration period;
                 double time = 0.0;
-                double kDeltaT = 1e-3;
 
                 while (!motion_command.motion_generation_finished) {
                     // Update time
@@ -393,7 +411,177 @@ int main() {
 
         case 8:
             std::cout << "[Test 8] Cartesian impedance control test." << std::endl;
-            
+
+            try {
+
+                // Optional: set impedance & collision if needed
+                franka_robot.setJointImpedance({{3000, 3000, 3000, 2500, 2500, 2000, 2000}});
+                franka_robot.setCartesianImpedance({{1000, 1000, 1000, 200, 200, 200}});
+                franka_robot.setCollisionBehavior(
+                {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
+                {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
+                {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}},
+                {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}});
+
+                // Set initial velocity command (required by JointVelocity mode)
+                motion_command.dq_c.fill(0.0);
+                motion_command.motion_generation_finished = false;
+
+                // Compliance parameters
+                const double K_trans{100};
+                const double K_rot{10};
+                const double k_nullspace_trans{100};
+                const double k_nullspace_rot{10};
+
+                //create the impedance matrixes
+                Eigen::MatrixXd stiffness(6, 6), damping(6, 6);
+                stiffness.setZero();
+                stiffness.topLeftCorner(3, 3) << K_trans * Eigen::MatrixXd::Identity(3, 3);
+                stiffness.bottomRightCorner(3, 3) << K_rot * Eigen::MatrixXd::Identity(3, 3);
+                damping.setZero();
+                damping.topLeftCorner(3, 3) << 2.0 * sqrt(K_trans) * Eigen::MatrixXd::Identity(3, 3);
+                damping.bottomRightCorner(3, 3) << 2.0 * sqrt(K_rot) *Eigen::MatrixXd::Identity(3, 3);
+
+                // Nullspace parameters same as the compliance parameters
+                Eigen::MatrixXd null_stiffness(7, 7), null_damping(7, 7);
+                null_stiffness.setZero();
+                null_damping.setZero();
+                null_stiffness.topLeftCorner(3, 3) = k_nullspace_trans * Eigen::Matrix3d::Identity();
+                null_stiffness.bottomRightCorner(4, 4) = k_nullspace_rot * Eigen::MatrixXd::Identity(4, 4);
+
+                //set load
+                franka_robot.setLoad(0.2, {0.0, 0.0, 0.1},                          
+                {0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0}
+                );
+
+                // Load the robot model
+                franka::Model model(franka_robot.loadModel());
+
+                // start the motion with Cartesian impedance control
+                uint32_t motion_id = franka_robot.startMotion(
+                    research_interface::robot::Move::ControllerMode::kExternalController,
+                    research_interface::robot::Move::MotionGeneratorMode::kJointVelocity,
+                    deviation, deviation
+                );
+
+                // Read the robot state once
+                franka::RobotState robot_state = franka_robot.readOnce();
+
+                // equilibrium point is the initial position
+                Eigen::Affine3d initial_transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
+                Eigen::Vector3d position_d(initial_transform.translation());
+                Eigen::Quaterniond orientation_d(initial_transform.rotation());
+
+                // Define the desired joint configuration
+                Eigen::VectorXd q_d(7);
+                q_d << robot_state.q[0], robot_state.q[1], robot_state.q[2],
+                    robot_state.q[3], robot_state.q[4], robot_state.q[5], robot_state.q[6];
+
+                franka::Duration previous_time = robot_state.time;
+                franka::Duration period;
+                double time = 0.0;
+                double kDeltaT = 1e-3;
+
+                // compute control
+                Eigen::VectorXd tau_task(7), tau_d(7), tau_nullspace(7);
+
+                while (!motion_command.motion_generation_finished) {
+
+                    // Update time
+                    period = robot_state.time - previous_time;
+                    previous_time = robot_state.time;
+                    time += period.toSec();
+
+                    // get state variables
+                    std::array<double, 7> coriolis_array = model.coriolis(robot_state);
+                    std::array<double, 42> jacobian_array =model.zeroJacobian(franka::Frame::kEndEffector, robot_state);
+                    std::array<double, 7> gravity_array = model.gravity(robot_state);
+                    Eigen::Map<const Eigen::Matrix<double, 7, 1>> gravity(gravity_array.data());
+
+                    // convert to Eigen
+                    Eigen::Map<const Eigen::Matrix<double, 7, 1>> coriolis(coriolis_array.data());
+                    Eigen::Map<const Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
+                    Eigen::Map<const Eigen::Matrix<double, 7, 1>> q(robot_state.q.data());
+                    Eigen::Map<const Eigen::Matrix<double, 7, 1>> dq(robot_state.dq.data());
+                    Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
+                    Eigen::Vector3d position(transform.translation());
+                    Eigen::Quaterniond orientation(transform.rotation());
+                    Eigen::MatrixXd identity = Eigen::MatrixXd::Identity(7, 7);
+                    Eigen::MatrixXd jacobian_pinv = jacobian.completeOrthogonalDecomposition().solve(Eigen::MatrixXd::Identity(6, 6));
+                    Eigen::MatrixXd nullspace_projector = identity - jacobian.transpose() * jacobian_pinv.transpose();
+
+                    // compute error to desired equilibrium pose
+                    // position error
+                    Eigen::Matrix<double, 6, 1> error;
+                    error.head(3) << position - position_d;
+
+                    // orientation error
+                    // "difference" quaternion
+                    if (orientation_d.coeffs().dot(orientation.coeffs()) < 0.0) {
+                        orientation.coeffs() << -orientation.coeffs();
+                    }
+                    // "difference" quaternion
+                    Eigen::Quaterniond error_quaternion(orientation.inverse() * orientation_d);
+                    error.tail(3) << error_quaternion.x(), error_quaternion.y(), error_quaternion.z();
+                    // Transform to base frame
+                    error.tail(3) << -transform.rotation() * error.tail(3);
+
+                    // Spring damper system with damping ratio=1
+                    tau_task << jacobian.transpose() * (-stiffness * error - damping * (jacobian * dq));
+                    //print tau_nullspace elements
+                    tau_nullspace = nullspace_projector * (null_stiffness * (q_d - q) - null_damping * dq);
+                    tau_d << tau_task + tau_nullspace + coriolis;
+                    
+                    //pass tau_d to the control command
+                    control_command.tau_J_d.fill(0.0);
+                    for (size_t i = 0; i < 7; ++i) {
+                        control_command.tau_J_d[i] = tau_d[i];
+                    }
+
+                    // Apply low-pass filter to the torque command
+                    for (size_t i = 0; i < 7; ++i) {
+                        control_command.tau_J_d[i] = franka::lowpassFilter(
+                            kDeltaT,
+                            control_command.tau_J_d[i],
+                            robot_state.tau_J_d[i],
+                            franka::kDefaultCutoffFrequency
+                        );
+                    }
+
+                    //rate limit the torque command
+                    control_command.tau_J_d = franka::limitRate(
+                        franka::kMaxTorqueRate,
+                        control_command.tau_J_d,
+                        robot_state.tau_J_d
+                    );
+
+                    // Send command, receive updated state
+                    robot_state = franka_robot.update(&motion_command, &control_command);
+                    franka_robot.throwOnMotionError(robot_state, motion_id);
+
+                    // Stop after 30 seconds
+                    if (time >= 30.0) {
+                        motion_command.motion_generation_finished = true;
+                    }
+
+                }
+
+                // Finish motion
+                franka_robot.finishMotion(motion_id, &motion_command, &control_command);
+                std::cout << "[Test 8] Motion session finished successfully." << std::endl;
+
+                // Final state
+                franka::RobotState final_state = franka_robot.readOnce();
+                std::cout << "[Test 8] Robot state after motion: " << final_state.q << std::endl;
+
+            } catch (const std::exception& e) {
+                std::cerr << "[Test 8] Cartesian motion error: " << e.what() << std::endl;
+                return -1;
+            }
+
+            break;
 
         default:
             std::cout << "Invalid test case selected." << std::endl;

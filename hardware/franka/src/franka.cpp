@@ -1,10 +1,17 @@
 #include "franka/franka.h"
 #include <chrono>
-
+#include <iostream>
 #include <Eigen/Dense>
+
 #include "robot_impl.h"
 #include "network.h"
-#include <iostream>
+
+template <typename T, size_t N>
+inline void checkFinite(const std::array<T, N>& array) {
+  if (!std::all_of(array.begin(), array.end(), [](double d) { return std::isfinite(d); })) {
+    throw std::invalid_argument("Commanding value is infinite or NaN.");
+  }
+}
   
 struct FRANKA::Implementation {
     //puntero a la implementacion de la clase Robot
@@ -85,15 +92,14 @@ struct FRANKA::Implementation {
                             const std::array<double, 6>& upper_force_thresholds_acceleration,
                             const std::array<double, 6>& lower_force_thresholds_nominal,
                             const std::array<double, 6>& upper_force_thresholds_nominal);
+    void setLoad(double load_mass,
+               const std::array<double, 3>& F_x_Cload,  // NOLINT(readability-identifier-naming)
+               const std::array<double, 9>& load_inertia);
+
+    //funcion para cargar el modelo del robot
+    franka::Model loadModel();
     
 };
-
-template <typename T, size_t N>
-inline void checkFinite(const std::array<T, N>& array) {
-  if (!std::all_of(array.begin(), array.end(), [](double d) { return std::isfinite(d); })) {
-    throw std::invalid_argument("Commanding value is infinite or NaN.");
-  }
-}
 
 // Constructor que inicializa la implementacion del robot con la configuracion del struct FRANKAConfig
 FRANKA::FRANKA(const FRANKAConfig& config){
@@ -180,7 +186,14 @@ void FRANKA::setCollisionBehavior(
                                 lower_force_thresholds_nominal,
                                 upper_force_thresholds_nominal);
 }
-
+void FRANKA::setLoad(double load_mass,
+               const std::array<double, 3>& F_x_Cload,  // NOLINT(readability-identifier-naming)
+               const std::array<double, 9>& load_inertia) {
+    impl_->setLoad(load_mass, F_x_Cload, load_inertia);
+}
+franka::Model FRANKA::loadModel() {
+    return impl_->loadModel();
+}
 
 //funciones de llamada a los metodos de robot_impl.h
 franka::RobotState FRANKA::Implementation::readOnce() {
@@ -258,7 +271,19 @@ void FRANKA::Implementation::setCollisionBehavior(
         upper_force_thresholds_nominal);
 }
 
+void FRANKA::Implementation::setLoad(double load_mass,
+               const std::array<double, 3>& F_x_Cload,  // NOLINT(readability-identifier-naming)
+               const std::array<double, 9>& load_inertia) {
+    // Create the request and execute the command
+    robot_impl->executeCommand<research_interface::robot::SetLoad>(
+        load_mass, F_x_Cload, load_inertia);
+}
 
+franka::Model FRANKA::Implementation::loadModel() {
+    return robot_impl->loadModel();
+}
+
+// IMPLEMENTACION DE FUNCIONES
 bool FRANKA::Implementation::getJoints(RUT::VectorXd& joints) {
     try {
         franka::RobotState state = readOnce();

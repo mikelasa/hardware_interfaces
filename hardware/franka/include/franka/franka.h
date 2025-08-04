@@ -17,6 +17,9 @@
 
 //include franka headers
 #include "robot_impl.h"
+#include "model.h"
+
+class Model;
 
 class FRANKA : public RobotInterfaces {
 
@@ -110,6 +113,12 @@ class FRANKA : public RobotInterfaces {
                             const std::array<double, 6>& upper_force_thresholds_acceleration,
                             const std::array<double, 6>& lower_force_thresholds_nominal,
                             const std::array<double, 6>& upper_force_thresholds_nominal);
+        void setLoad(double load_mass,
+               const std::array<double, 3>& F_x_Cload,  // NOLINT(readability-identifier-naming)
+               const std::array<double, 9>& load_inertia);
+
+        //load model
+        franka::Model loadModel();
 
     private:
         // crear un puntero a la clase Robot::Impl (Pimpl idiom)
