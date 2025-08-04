@@ -26,7 +26,6 @@ class FRANKA : public RobotInterfaces {
             double log_size{1000};
             double tcp_mass{0.0};
             double tcp_inertia{0.0};
-            RUT::Vector6d cartesian_impedance{};
             RUT::Vector3d deviation{10.0, 3.12, 2 * M_PI};
 
             RobotInterfaceConfig robot_interface_config{};
@@ -38,7 +37,6 @@ class FRANKA : public RobotInterfaces {
                     robot_interface_config.deserialize(node["robot_interface_config"]);
                     tcp_mass = node["tcp_mass"].as<double>();
                     tcp_inertia = node["tcp_inertia"].as<double>();
-                    cartesian_impedance = RUT::deserialize_vector<RUT::Vector6d>(node["cartesian_impedance"]);
                     deviation = RUT::deserialize_vector<RUT::Vector3d>(node["deviation"]);
                 } catch (const std::exception& e) {
                     std::cerr << "Failed to load the config file: " << e.what() << std::endl;
@@ -50,6 +48,8 @@ class FRANKA : public RobotInterfaces {
 
         FRANKA(const FRANKAConfig& config);
         virtual ~FRANKA();
+
+        static constexpr research_interface::robot::Move::Deviation kDefaultDeviation{10.0, 3.12, 2 * M_PI};
 
         /*
             *get Cartesian pose of the robot tool. Distances are in mm.
@@ -67,22 +67,22 @@ class FRANKA : public RobotInterfaces {
         bool setCartesian(const RUT::Vector7d& pose) override;
         bool getJoints(RUT::VectorXd& joints) override;
         bool setJoints(const RUT::VectorXd& joints) override;
-
-        //not robot_interfaces functions
-
-        //get Wrench Base on Tool 
         bool getWrenchBaseOnTool(RUT::Vector6d& wrench);
-        //get Wrench Tool
         bool getWrenchTool(RUT::Vector6d& wrench);
         bool getTorques(RUT::VectorXd& torques);
         bool setTorques(const RUT::VectorXd& torques);
 
-        static constexpr research_interface::robot::Move::Deviation kDefaultDeviation{10.0, 3.12,
-                                                                                2 * M_PI};
+        /* funciones de robot_impl.h 
+        * readOnce lee el estado del robot una vez
+        * update actualiza el estado del robot con el comando de generador de movimiento y el comando de controlador
+        * startMotion inicia un movimiento del robot, devuelve el id del movimiento
+        * finishMotion termina un movimiento del robot
+        * cancelMotion cancela un movimiento del robot
+        * throwOnMotionError lanza una excepcion si hay un error en el movimiento del robot
+        * realtimeConfig devuelve la configuracion de tiempo real del robot
+        */
 
-        //readOnce reads the state of the robot once
         franka::RobotState readOnce();
-        //update updates the state of the robot with the given motion command and control command
         franka::RobotState update(const research_interface::robot::MotionGeneratorCommand* motion_command,
                                    const research_interface::robot::ControllerCommand* control_command);
         uint32_t startMotion(research_interface::robot::Move::ControllerMode controller_mode,
@@ -93,7 +93,24 @@ class FRANKA : public RobotInterfaces {
                         const research_interface::robot::MotionGeneratorCommand* motion_command,
                         const research_interface::robot::ControllerCommand* control_command);
         void cancelMotion(uint32_t motion_id);
-            
+        void throwOnMotionError(const franka::RobotState& robot_state, uint32_t motion_id);
+
+        /*funciones para setear comportamientos en el robot
+        * setJointImpedance setea la impedancia en las juntas del robot
+        * setCartesianImpedance setea la impedancia en el espacio cartesiano del robot
+        * setCollisionBehavior setea el comportamiento de colision del robot
+        */
+        void setJointImpedance(const std::array<double, 7>& K_theta);
+        void setCartesianImpedance(const std::array<double, 6>& K_x);
+        void setCollisionBehavior(const std::array<double, 7>& lower_torque_thresholds_acceleration,
+                            const std::array<double, 7>& upper_torque_thresholds_acceleration,
+                            const std::array<double, 7>& lower_torque_thresholds_nominal,
+                            const std::array<double, 7>& upper_torque_thresholds_nominal,
+                            const std::array<double, 6>& lower_force_thresholds_acceleration,
+                            const std::array<double, 6>& upper_force_thresholds_acceleration,
+                            const std::array<double, 6>& lower_force_thresholds_nominal,
+                            const std::array<double, 6>& upper_force_thresholds_nominal);
+
     private:
         // crear un puntero a la clase Robot::Impl (Pimpl idiom)
         struct Implementation;

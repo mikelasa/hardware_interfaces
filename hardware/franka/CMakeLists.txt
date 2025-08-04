@@ -1,7 +1,7 @@
 include_directories(
   include/
   /home/mikel/ACP/libfranka-0.9.2/src/
-  /home/mikel/ACP/libfranka-0.9.2/include/
+  /home/mikel/ACP/libfranka-0.9.2/include/franka/
   /home/mikel/ACP/libfranka-0.9.2/common/include/
   /usr/include/eigen3
 )
