@@ -582,6 +582,25 @@ int main() {
             }
 
             break;
+        
+        case 9:
+            std::cout << "[Test 9] test franka.cpp get/set functions" << std::endl;
+
+            try
+            {
+                // variables
+                RUT::VectorXd joint_positions;
+                // first compare readOnce().q vs FRANKA::getJoints()
+                franka::RobotState robot_state = franka_robot.readOnce();
+                std::cout << "[Test 9] Robot state readOnce: " << robot_state.q << std::endl;
+                franka_robot.getJoints(joint_positions);
+                
+            }
+            catch (const std::exception& e) {
+                std::cerr << "[Test 9] Get/Set functions error: " << e.what() << std::endl;
+                return -1;
+            }
+            
 
         default:
             std::cout << "Invalid test case selected." << std::endl;
