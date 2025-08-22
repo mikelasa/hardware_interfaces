@@ -28,15 +28,30 @@ void main_print(const std::string& msg) {
 }
 
 int main() {
-  // read config files
+  
+  /*
+  // read config files, loads:
+      - main params: is bimanual, data folder...
+      - config for what threads to run and parameters
+      - hardware config (roobot, camera...)
+      -  controller config
+  */
   const std::string config_path =
       "/path/to/hardware_interfaces/workcell/"
       "table_top_manip/"
-      "config/bimanual_data_collection.yaml";
+      "config/single_arm_data_collection.yaml";
 
+
+  // create the server, this server handles all the data collection pipeline, communication with hardware, etc...
   ManipServer server(config_path);
 
-  // wait for threads to be ready
+  /*
+    wait for threads to be ready:
+      - RGB thread
+      - robot
+      - gripper (if gripper)
+      - wrench (if sensor)
+  */ 
   while (!server.is_ready()) {
     std::cout << "Waiting for server to be ready." << std::endl;
     std::this_thread::sleep_for(std::chrono::milliseconds(400));
@@ -45,12 +60,14 @@ int main() {
   // use all dofs for compliance
   RUT::Matrix6d Tr = RUT::Matrix6d::Identity();
   int n_af = 6;
+  // tells the admittance controller which directions are compliant to external force (solo en admitance)
   server.set_force_controlled_axis(Tr, n_af, 0);
+  // if bimanual, set the second arm's force controlled axis
   if (server.is_bimanual()) {
     server.set_force_controlled_axis(Tr, n_af, 1);
   }
 
-  // use high stiffness
+  // use high stiffness to hold position being compliant
   server.set_high_level_maintain_position();
 
   // Main loop
@@ -60,10 +77,10 @@ int main() {
     std::getchar();
     duration_timer.tic();
 
-    // set the robot to be compliant
+    // set the robot to be compliant, stiffness low
     server.set_high_level_free_jogging();
 
-    // start saving data
+    // start saving data 
     main_print(
         "[main] Recording in progress. Press Enter to finish the episode.");
     server.start_saving_data_for_a_new_episode();
@@ -71,6 +88,7 @@ int main() {
     // wait for user to stop the episode
     std::getchar();
 
+    // set the robot to hold position with high stiffness
     server.set_high_level_maintain_position();
     double episode_duration_s = duration_timer.toc_ms() / 1000.0;
     std::cout << "[main] Episode finished with duration " << episode_duration_s

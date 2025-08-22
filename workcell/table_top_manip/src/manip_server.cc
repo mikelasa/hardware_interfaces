@@ -10,6 +10,7 @@ ManipServer::~ManipServer() {}
 bool ManipServer::initialize(const std::string& config_path) {
   std::cout << "[ManipServer] Initializing.\n";
 
+  // start timer to measure setup time
   RUT::TimePoint time0 = _timer.tic();
 
   // read config files
@@ -23,6 +24,7 @@ bool ManipServer::initialize(const std::string& config_path) {
     return false;
   }
 
+  // sets ID for each robot if bimanual
   if (_config.bimanual) {
     _id_list = {0, 1};
   } else {
@@ -38,10 +40,11 @@ bool ManipServer::initialize(const std::string& config_path) {
   std::cout << "[ManipServer] Initialize each hardware interface.\n";
 
   // initialize hardwares
+  // if not using mock hardware
   if (!_config.mock_hardware) {
     for (int id : _id_list) {
       // Robot
-      // TODO: support other robots
+      // load the robot config
       URRTDE::URRTDEConfig robot_config;
       try {
         robot_config.deserialize(config["ur_rtde" + std::to_string(id)]);
@@ -50,15 +53,18 @@ bool ManipServer::initialize(const std::string& config_path) {
                   << std::endl;
         return false;
       }
+      //robot_ptrs is a vector of RobotInterface pointers, for each robot in id_list append a new URRTDE instance
       robot_ptrs.emplace_back(new URRTDE);
+      // initialize robot, static_cast 
       URRTDE* urrtde_ptr = static_cast<URRTDE*>(robot_ptrs[id].get());
+      // call init on the robot (CUIDADO AQUI)
       if (!urrtde_ptr->init(time0, robot_config)) {
         std::cerr << "Failed to initialize UR RTDE for id " << id
                   << ". Exiting." << std::endl;
         return false;
       }
 
-      // EoAT
+      // EoAT - WSG Gripper
       if (_config.run_eoat_thread) {
         // only initialize if the thread is running
         WSGGripper::WSGGripperConfig eoat_config;
@@ -80,6 +86,7 @@ bool ManipServer::initialize(const std::string& config_path) {
       }
 
       // Camera
+      // first confirm which camera is being used
       if (_config.camera_selection == CameraSelection::GOPRO) {
         GoPro::GoProConfig gopro_config;
         try {
@@ -96,6 +103,7 @@ bool ManipServer::initialize(const std::string& config_path) {
                     << ". Exiting." << std::endl;
           return false;
         }
+      // REALSENSE CAMERA
       } else if (_config.camera_selection == CameraSelection::REALSENSE) {
         Realsense::RealsenseConfig realsense_config;
         try {
@@ -181,14 +189,15 @@ bool ManipServer::initialize(const std::string& config_path) {
       }
     }
   } else {
-    // mock hardware
+    // mock hardware, if true then the publish rate of wrench is just 7kHz
     for (int id : _id_list) {
       wrench_publish_rate.push_back(7000);
     }
   }
 
-  // initialize Admittance controller
+  // initialize Admittance controller, for each arm in id_list
   for (int id : _id_list) {
+    // create a new instance of the AdmittanceController
     AdmittanceController::AdmittanceControllerConfig admittance_config;
     try {
       deserialize(config["admittance_controller" + std::to_string(id)],
@@ -199,8 +208,13 @@ bool ManipServer::initialize(const std::string& config_path) {
       return false;
     }
 
+    // same as hardware, for each controller in id_list appends a new AdmittanceController and mutex
     _controllers.emplace_back();
+    // mutex for controller, to thread safety
     _controller_mtxs.emplace_back();
+
+    // gets the current pose of robot to use as initial pose
+    //then initializes the controller with time, config parameters and pose
     RUT::Vector7d pose = RUT::Vector7d::Zero();
     if (!_config.mock_hardware) {
       robot_ptrs[id]->getCartesian(pose);
@@ -210,12 +224,16 @@ bool ManipServer::initialize(const std::string& config_path) {
                 << ". Exiting." << std::endl;
       return false;
     }
+
+    // set the force controlled axis, use all dofs for compliance
+
     RUT::Matrix6d Tr = RUT::Matrix6d::Identity();
     // The robot should not behave with any compliance during initialization.
     // The user needs to set the desired compliance afterwards.
     int n_af = 0;
     _controllers[id].setForceControlledAxis(Tr, n_af);
 
+    //values for stiffness and damping taken from config
     _stiffnesses_high.push_back(admittance_config.compliance6d.stiffness);
     _stiffnesses_low.push_back(RUT::Matrix6d::Zero());
     _dampings_high.push_back(admittance_config.compliance6d.damping);
@@ -223,6 +241,8 @@ bool ManipServer::initialize(const std::string& config_path) {
   }
 
   // create the data buffers
+  // each variable is saved using DataBuffer, which is a thread-safe circular buffer
+  // the buffers are initialized with the appropriate sizes and names
   std::cout << "[ManipServer] Creating data buffers.\n";
   for (int id : _id_list) {
     int num_ft_sensors = force_sensor_ptrs[id]->getNumSensors();
@@ -310,6 +330,7 @@ bool ManipServer::initialize(const std::string& config_path) {
   }
 
   // initialize thread status variables
+  // indicates the state of each thread
   for (int id : _id_list) {
     _states_robot_thread_ready.push_back(false);
     _states_eoat_thread_ready.push_back(false);
@@ -345,7 +366,16 @@ bool ManipServer::initialize(const std::string& config_path) {
     _robot_wrench_timestamps_ms.push_back(Eigen::VectorXd());
   }
 
-  // kickoff the threads
+  /*
+    launch the threads and calls to their respective loops in manip_server_loops.cpp:
+      - RGB
+      - Wrench
+      - Robot
+      - EOAT
+
+      thread runs until _ctrl_flag_running is false
+  */
+
   _ctrl_flag_running = true;
   std::cout << "[ManipServer] Starting the threads.\n";
   for (int id : _id_list) {
