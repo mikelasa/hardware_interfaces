@@ -70,8 +70,6 @@ class FRANKA : public RobotInterfaces {
         bool setCartesian(const RUT::Vector7d& pose) override;
         bool getJoints(RUT::VectorXd& joints) override;
         bool setJoints(const RUT::VectorXd& joints) override;
-        bool getWrenchBaseOnTool(RUT::Vector6d& wrench);
-        bool getWrenchTool(RUT::Vector6d& wrench);
         bool getTorques(RUT::VectorXd& torques);
         bool setTorques(const RUT::VectorXd& torques);
 

@@ -314,27 +314,6 @@ bool FRANKA::Implementation::getTorques(RUT::VectorXd& torques) {
     }
 }
 
-bool FRANKA::Implementation::getWrenchBaseOnTool(RUT::Vector6d& wrench) {
-    try {
-        franka::RobotState state = readOnce();
-        wrench = Eigen::Map<const RUT::Vector6d>(state.O_F_ext_hat_K.data(), 6);
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
-// Todo: AHORA ESTA SOBRE FRAME BASE, SE SUPONE QUE ES SOBRE FRAME TOOL
-bool FRANKA::Implementation::getWrenchTool(RUT::Vector6d& wrench) {
-    try {
-        franka::RobotState state = readOnce();
-        wrench = Eigen::Map<const RUT::Vector6d>(state.O_F_ext_hat_K.data(), 6);
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
 bool FRANKA::Implementation::setCartesian(const RUT::Vector7d& pose) {
     if (pose.size() != 16) return false;  // Optional check
 

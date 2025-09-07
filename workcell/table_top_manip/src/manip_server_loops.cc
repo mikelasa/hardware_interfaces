@@ -5,51 +5,60 @@
 
 #include "helpers.hpp"
 
+// robot control loop
 void ManipServer::robot_loop(const RUT::TimePoint& time0, int id) {
   std::string header =
       "[ManipServer][Robot thread] " + std::to_string(id) + ": ";
   std::cout << header + "starting thread.\n";
 
+  // using the global timer, creates a local timer for this thread
   RUT::Timer timer;
   timer.tic(time0);  // so this timer is synced with the main timer
 
-  RUT::Vector7d pose_fb;
-  RUT::Vector7d pose_target_waypoint;
-  RUT::Vector6d vel_fb;
-  RUT::Vector7d force_control_ref_pose;
-  RUT::Vector7d pose_rdte_cmd;
+  RUT::Vector7d pose_fb; // current pose feedback
+  RUT::Vector7d pose_target_waypoint; // target pose waypoint
+  RUT::Vector6d vel_fb; // current velocity feedback
+  RUT::Vector7d force_control_ref_pose; // force control reference pose
+  RUT::Vector7d pose_rdte_cmd; // pose command for RTDE
   // The following two initial values are used in mock hardware mode
   pose_fb << id, 0, 0, 1, 0, 0, 0;
   pose_rdte_cmd = pose_fb;
   vel_fb << 0, 0, 0, 0, 0, 0;
 
-  RUT::Vector6d wrench_fb_ur, wrench_WTr;
+  RUT::Vector6d wrench_fb_ur, wrench_WTr; // current wrench feedback and transformed wrench world to tool frame
   RUT::Matrix6d stiffness;
 
   // TODO: use base pointer robot_ptr instead of URRTDE
   //       Need to create interfaces for all used functions here in RobotInterfaces
   URRTDE* urrtde_ptr;
 
+  // Get URRTDE pointer and get initial pose
   if (!_config.mock_hardware) {
     urrtde_ptr = static_cast<URRTDE*>(robot_ptrs[id].get());
     urrtde_ptr->getCartesian(pose_fb);
   }
 
+  // set initial values for force control
   force_control_ref_pose = pose_fb;
   wrench_WTr.setZero();
 
+  // Initialize control flags
   bool ctrl_flag_saving = false;  // local copy
 
+  //A controller that interpolates linearly between two Cartesian targets.
+  // initializes with the current pose and timestamp
   RUT::TaskSpaceInterpolationController intp_controller;
   intp_controller.initialize(pose_fb, timer.toc_ms());
   std::cout << header << "intp_controller initialized with pose_fb: "
             << pose_fb.transpose() << std::endl;
 
+  // this part sets the robot thread state to ready (initialize in manip server)
   {
     std::lock_guard<std::mutex> lock(_ctrl_mtx);
     _states_robot_thread_ready[id] = true;
   }
 
+  // profile measures the loop execution time and performance (important for real time control)
   RUT::Profiler loop_profiler;
   std::cout << header << "Loop started." << std::endl;
 
@@ -62,12 +71,15 @@ void ManipServer::robot_loop(const RUT::TimePoint& time0, int id) {
     RUT::TimePoint t_start;
     double time_now_ms;
     if (!_config.mock_hardware) {
-      // real hardware
+      // updates robot states 
+      // UR uses rtde_init_period() + rtde_wait_period() to enforce a 2 ms period. FRANKA???? NI IDEA
       t_start = urrtde_ptr->rtde_init_period();
       urrtde_ptr->getCartesian(pose_fb);
       urrtde_ptr->getCartesianVelocity(vel_fb);
       urrtde_ptr->getWrenchTool(wrench_fb_ur);
       time_now_ms = timer.toc_ms();
+
+      // save feedback in buffers
       loop_profiler.stop("compute");
       loop_profiler.start();
       {
@@ -84,7 +96,8 @@ void ManipServer::robot_loop(const RUT::TimePoint& time0, int id) {
       vel_fb.setZero();
       wrench_fb_ur.setZero();
     }
-    // buffer robot pose
+
+    // buffer robot pose, velocity and wrench (save data)
     loop_profiler.stop("compute");
     loop_profiler.start();
     {
@@ -105,7 +118,8 @@ void ManipServer::robot_loop(const RUT::TimePoint& time0, int id) {
     loop_profiler.stop("lock");
     loop_profiler.start();
 
-    // update control target from interpolation controller
+    // update  target from interpolation controller
+    // get_control returns false if no valid target is found, if so, needs to create a new one
     if (!intp_controller.get_control(time_now_ms, force_control_ref_pose)) {
       bool new_wp_found = false;
       {
