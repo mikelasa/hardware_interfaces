@@ -38,7 +38,7 @@ int main() {
     double kDeltaT = 1e-3;
     
     // pick a test case to run with user input from prompt
-    int test_case = 8;
+    int test_case = 5;
 
     switch (test_case) {
         case 1:
@@ -584,22 +584,165 @@ int main() {
             break;
         
         case 9:
-            std::cout << "[Test 9] test franka.cpp get/set functions" << std::endl;
+            std::cout << "[Test 9] test libfranka readOnce() and RobotInterfaces functions" << std::endl;
 
             try
             {
-                // variables
+                // variables for get functions
                 RUT::VectorXd joint_positions;
+                RUT::VectorXd joint_torques;
+                RUT::Vector7d cartesian_pose;
+
+                //variables for franka reads
+                RUT::VectorXd q_d(7);
+                RUT::VectorXd tau_d(7);
+                RUT::VectorXd pose(7);
+
                 // first compare readOnce().q vs FRANKA::getJoints()
                 franka::RobotState robot_state = franka_robot.readOnce();
-                std::cout << "[Test 9] Robot state readOnce: " << robot_state.q << std::endl;
-                franka_robot.getJoints(joint_positions);
+        
+                // save robot_state.q to q_d
+                for (size_t i = 0; i < 7; ++i) {
+                    q_d[i] = robot_state.q[i];
+                }
+                std::cout << "[Test 9] Robot state readOnce().q: " << q_d << std::endl;
                 
+                //get joints with RobotInterface
+                franka_robot.getJoints(joint_positions);
+                std::cout << "[Test 9] Robot state getJoints: " << joint_positions << std::endl;
+
+                //compare readOnce().O_T_EE vs FRANKA::getCartesianPose()
+                // convert robot_state.O_T_EE (array 16) to pose (array 7)
+                Eigen::Affine3d transform(Eigen::Matrix4d::Map(robot_state.O_T_EE.data()));
+                Eigen::Vector3d position(transform.translation());
+                Eigen::Quaterniond orientation(transform.rotation());
+                pose[0] = position[0];
+                pose[1] = position[1];
+                pose[2] = position[2];
+                pose[3] = orientation.x();
+                pose[4] = orientation.y();
+                pose[5] = orientation.z();
+                pose[6] = orientation.w();
+                std::cout << "[Test 9] Robot state readOnce().O_T_EE: " << pose << std::endl;
+
+                //get cartesian pose with RobotInterface
+                franka_robot.getCartesian(cartesian_pose);
+                std::cout << "[Test 9] Robot state getCartesianPose: " << cartesian_pose << std::endl;
+
+                //finally compare readOnce().tau_J_d vs FRANKA::getTorques()
+                for (size_t i = 0; i < 7; ++i) {
+                    tau_d[i] = robot_state.tau_J_d[i];
+                }
+                std::cout << "[Test 9] Robot state readOnce().tau_J_d: " << tau_d << std::endl;
+
+                //get torques with RobotInterface
+                franka_robot.getTorques(joint_torques);
+                std::cout << "[Test 9] Robot state getTorques: " << joint_torques << std::endl;
+
             }
             catch (const std::exception& e) {
                 std::cerr << "[Test 9] Get/Set functions error: " << e.what() << std::endl;
                 return -1;
             }
+            break;
+
+            case 10:
+            std::cout << "[Test 10] set joint position test using libfranka " << std::endl;
+
+            try {
+
+                //set impedance to robot
+                franka_robot.setJointImpedance({{3000, 3000, 3000, 2500, 2500, 2000, 2000}});
+                franka_robot.setCartesianImpedance({{3000, 3000, 3000, 300, 300, 300}});
+                franka_robot.setCollisionBehavior(
+                {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
+                {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
+                {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}},
+                {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}});
+
+
+                uint32_t motion_id = franka_robot.startMotion(
+                    research_interface::robot::Move::ControllerMode::kJointImpedance,
+                    research_interface::robot::Move::MotionGeneratorMode::kJointPosition,
+                    deviation, deviation
+                );
+
+                // Read the initial robot state
+                //franka::RobotState init_state = franka_robot.readOnce();
+                franka::RobotState robot_state = franka_robot.update(nullptr, nullptr);
+                franka_robot.throwOnMotionError(robot_state, motion_id);
+                std::cout << "[Test 5] Robot state before motion: " << robot_state.q << std::endl;
+
+                // Initial setup: capture initial state
+                std::array<double, 7> target_position = robot_state.q;
+
+                // franka duration for the control loop
+                franka::Duration period;
+                franka::Duration previous_time = robot_state.time;
+
+                double time = 0.0;
+                double kDeltaT = 1e-3;
+
+                while(!motion_command.motion_generation_finished) {
+
+                    // calculate the time step
+                    period = robot_state.time - previous_time;
+                    previous_time = robot_state.time;
+                    time += period.toSec();
+
+                    // Update target position based on time
+                    double delta = M_PI / 8.0 * (1 - std::cos(M_PI / 2.5 * time));
+
+                    // here goes SpinMotion similar part
+                    //move joint 5
+                    motion_command.q_c = target_position;
+                    motion_command.q_c[4] = motion_command.q_c[4] + delta;
+                    
+                    // Apply low-pass filter from lowpass_filter.h to the target position
+                    for (size_t i = 0; i < 7; ++i) {
+                        motion_command.q_c[i] = franka::lowpassFilter(
+                            kDeltaT,
+                            motion_command.q_c[i],
+                            robot_state.q_d[i],
+                            franka::kDefaultCutoffFrequency
+                        );
+                    }
+                    
+                    //limit rate of the motion command
+                    motion_command.q_c = franka::limitRate(
+                        franka::kMaxJointVelocity,
+                        franka::kMaxJointAcceleration,
+                        franka::kMaxJointJerk,
+                        motion_command.q_c,
+                        robot_state.q_d,
+                        robot_state.dq_d,
+                        robot_state.ddq_d
+                    );
+
+                    // Update robot: send command and receive new state
+                    robot_state = franka_robot.update(&motion_command, nullptr);
+                    franka_robot.throwOnMotionError(robot_state, motion_id);
+                    
+                    // if time is 5
+                    if (time >= 5.0) {
+                        motion_command.motion_generation_finished = true;
+                    }
+
+                }
+
+                std::cout << "[Test 5] Motion command finished." << std::endl;
+                // Finish the motion session (deberia meter en el while con un flag cuando termina el movimiento)
+                franka_robot.finishMotion(motion_id, &motion_command, nullptr);
+
+                // Read final state
+                franka::RobotState final_state = franka_robot.readOnce();
+                std::cout << "[Test 5] Robot state after motion: " << final_state.q << std::endl;
+
+            } catch (const std::exception& e) {
+                std::cerr << "[Test 5] Failed to start/finish motion: " << e.what() << std::endl;
+                return -1;
+            }
+            break;
             
 
         default:

@@ -54,14 +54,12 @@ struct FRANKA::Implementation {
     ~Implementation() {}
 
     // metodos para obtener estado del robot
-    bool getCartesian(RUT::Vector7d& pose);
+    bool getCartesian(RUT::Vector7d& pose_xyzq);
     bool getJoints(RUT::VectorXd& joints);
     bool getTorques(RUT::VectorXd& torques);
-    bool getWrenchBaseOnTool(RUT::Vector6d& wrench);
-    bool getWrenchTool(RUT::Vector6d& wrench);
 
     // metodos para setear estado del robot
-    bool setCartesian(const RUT::Vector7d& pose);
+    bool setCartesian(const RUT::Vector7d& pose_xyzq);
     bool setJoints(const RUT::VectorXd& joints);
     bool setTorques(const RUT::VectorXd& torques);
 
@@ -109,11 +107,11 @@ FRANKA::FRANKA(const FRANKAConfig& config){
 FRANKA::~FRANKA() {}
 
 //funciones de llamada a impl de la clase FRANKA
-bool FRANKA::getCartesian(RUT::Vector7d& pose) {
-    return impl_->getCartesian(pose);
+bool FRANKA::getCartesian(RUT::Vector7d& pose_xyzq) {
+    return impl_->getCartesian(pose_xyzq);
 }
-bool FRANKA::setCartesian(const RUT::Vector7d& pose) {
-    return impl_->setCartesian(pose);
+bool FRANKA::setCartesian(const RUT::Vector7d& pose_xyzq) {
+    return impl_->setCartesian(pose_xyzq);
 }   
 bool FRANKA::getJoints(RUT::VectorXd& joints) {
     return impl_->getJoints(joints);
@@ -127,12 +125,7 @@ bool FRANKA::getTorques(RUT::VectorXd& torques) {
 bool FRANKA::setTorques(const RUT::VectorXd& torques) {
     return impl_->setTorques(torques);
 }
-bool FRANKA::getWrenchBaseOnTool(RUT::Vector6d& wrench) {
-    return impl_->getWrenchBaseOnTool(wrench);
-}
-bool FRANKA::getWrenchTool(RUT::Vector6d& wrench) {
-    return impl_->getWrenchTool(wrench);
-}
+
 franka::RobotState FRANKA::readOnce() {
     return impl_->readOnce();
 }
@@ -294,10 +287,22 @@ bool FRANKA::Implementation::getJoints(RUT::VectorXd& joints) {
     }
 }
 
-bool FRANKA::Implementation::getCartesian(RUT::Vector7d& pose) {
+bool FRANKA::Implementation::getCartesian(RUT::Vector7d& pose_xyzq) {
     try {
         franka::RobotState state = readOnce();
-        pose = Eigen::Map<const RUT::Vector7d>(state.O_T_EE.data(), 7);
+        // O_T_EE is a 4x4 row-major matrix (16 elements)
+        Eigen::Affine3d transform(Eigen::Matrix4d::Map(state.O_T_EE.data()));
+        Eigen::Vector3d position = transform.translation();
+        Eigen::Quaterniond quat(transform.rotation());
+
+        pose_xyzq[0] = position.x();
+        pose_xyzq[1] = position.y();
+        pose_xyzq[2] = position.z();
+        pose_xyzq[3] = quat.x();
+        pose_xyzq[4] = quat.y();
+        pose_xyzq[5] = quat.z();
+        pose_xyzq[6] = quat.w();
+
         return true;
     } catch (...) {
         return false;

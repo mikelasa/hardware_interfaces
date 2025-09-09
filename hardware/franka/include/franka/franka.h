@@ -66,8 +66,8 @@ class FRANKA : public RobotInterfaces {
             * set joint angles in rad.
             * @param[in]  joints  The joints.
         */
-        bool getCartesian(RUT::Vector7d& pose) override;
-        bool setCartesian(const RUT::Vector7d& pose) override;
+        bool getCartesian(RUT::Vector7d& pose_xyzq) override;
+        bool setCartesian(const RUT::Vector7d& pose_xyzq) override;
         bool getJoints(RUT::VectorXd& joints) override;
         bool setJoints(const RUT::VectorXd& joints) override;
         bool getTorques(RUT::VectorXd& torques);
