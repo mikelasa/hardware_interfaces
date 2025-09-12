@@ -27,9 +27,10 @@ class FRANKA : public RobotInterfaces {
         struct FRANKAConfig {
             std::string robot_ip{};
             double log_size{1000};
-            double tcp_mass{0.0};
+            double tcp_mass{0.1};
             double tcp_inertia{0.0};
             RUT::Vector3d deviation{10.0, 3.12, 2 * M_PI};
+            double kDeltaT{1e-5}; // Time step for filtering and rate limiting
 
             RobotInterfaceConfig robot_interface_config{};
     
@@ -41,6 +42,7 @@ class FRANKA : public RobotInterfaces {
                     tcp_mass = node["tcp_mass"].as<double>();
                     tcp_inertia = node["tcp_inertia"].as<double>();
                     deviation = RUT::deserialize_vector<RUT::Vector3d>(node["deviation"]);
+                    kDeltaT = node["kDeltaT"].as<double>();
                 } catch (const std::exception& e) {
                     std::cerr << "Failed to load the config file: " << e.what() << std::endl;
                     return false;
@@ -96,6 +98,14 @@ class FRANKA : public RobotInterfaces {
         void cancelMotion(uint32_t motion_id);
         void throwOnMotionError(const franka::RobotState& robot_state, uint32_t motion_id);
 
+        // functions to start different motion sessions: cartesian, joint, impedance...
+        bool startCartesianMotion(
+        research_interface::robot::Move::ControllerMode controller_mode,
+        research_interface::robot::Move::MotionGeneratorMode motion_generator_mode
+        );
+
+        void finishCurrentMotion();
+
         /*funciones para setear comportamientos en el robot
         * setJointImpedance setea la impedancia en las juntas del robot
         * setCartesianImpedance setea la impedancia en el espacio cartesiano del robot
@@ -117,6 +127,8 @@ class FRANKA : public RobotInterfaces {
 
         //load model
         franka::Model loadModel();
+
+        
 
     private:
         // crear un puntero a la clase Robot::Impl (Pimpl idiom)

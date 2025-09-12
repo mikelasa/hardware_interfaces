@@ -2,6 +2,8 @@
 #include <chrono>
 #include <iostream>
 #include <Eigen/Dense>
+#include "lowpass_filter.h"
+#include "rate_limiting.h"
 
 #include "robot_impl.h"
 #include "network.h"
@@ -18,8 +20,13 @@ struct FRANKA::Implementation {
     std::unique_ptr<franka::Robot::Impl> robot_impl;
     //id del motion
     uint32_t motion_id;
+    // Último estado del robot
+    franka::RobotState robot_state;
     //configuracion del robot desde yaml
     FRANKA::FRANKAConfig config{};
+    // Persistent command objects
+    research_interface::robot::MotionGeneratorCommand motion_command{};
+    research_interface::robot::ControllerCommand control_command{};
 
     //constructor que recibe la configuracion del robot
     Implementation(const FRANKA::FRANKAConfig& config) 
@@ -55,6 +62,8 @@ struct FRANKA::Implementation {
 
     // metodos para obtener estado del robot
     bool getCartesian(RUT::Vector7d& pose_xyzq);
+    // Getter para el último estado
+    const franka::RobotState& getLastRobotState() const { return robot_state; }
     bool getJoints(RUT::VectorXd& joints);
     bool getTorques(RUT::VectorXd& torques);
 
@@ -79,6 +88,11 @@ struct FRANKA::Implementation {
 
     void throwOnMotionError(const franka::RobotState& robot_state, uint32_t motion_id);
 
+    bool startCartesianMotion(
+        research_interface::robot::Move::ControllerMode controller_mode,
+        research_interface::robot::Move::MotionGeneratorMode motion_generator_mode
+        );
+
     //funciones para setear impedancia en el robot (falta setCollisionBehavior)
     void setJointImpedance(const std::array<double, 7>& K_theta);
     void setCartesianImpedance(const std::array<double, 6>& K_x);
@@ -96,6 +110,8 @@ struct FRANKA::Implementation {
 
     //funcion para cargar el modelo del robot
     franka::Model loadModel();
+
+    void finishCurrentMotion();
     
 };
 
@@ -160,6 +176,28 @@ void FRANKA::setCartesianImpedance(const std::array<double, 6>& K_x) {
 void FRANKA::throwOnMotionError(const franka::RobotState& robot_state, uint32_t motion_id) {
     impl_->throwOnMotionError(robot_state, motion_id);
 }
+bool FRANKA::startCartesianMotion(
+    research_interface::robot::Move::ControllerMode controller_mode,
+        research_interface::robot::Move::MotionGeneratorMode motion_generator_mode) {
+        try {
+            uint32_t id = impl_->startMotion(
+                controller_mode, motion_generator_mode,
+                research_interface::robot::Move::Deviation(
+                    impl_->config.deviation[0], 
+                    impl_->config.deviation[1], 
+                    impl_->config.deviation[2]),
+                research_interface::robot::Move::Deviation(
+                    impl_->config.deviation[0], 
+                    impl_->config.deviation[1], 
+                    impl_->config.deviation[2])
+            );
+            impl_->motion_id = id; // Store internally
+            return id != 0;
+        } catch (const std::exception& e) {
+            std::cerr << "Error while starting Cartesian motion: " << e.what() << std::endl;
+            return false;
+        }
+    }
 void FRANKA::setCollisionBehavior(
     const std::array<double, 7>& lower_torque_thresholds_acceleration,
     const std::array<double, 7>& upper_torque_thresholds_acceleration,
@@ -186,6 +224,10 @@ void FRANKA::setLoad(double load_mass,
 }
 franka::Model FRANKA::loadModel() {
     return impl_->loadModel();
+}
+
+void FRANKA::finishCurrentMotion() {
+    impl_->finishCurrentMotion();
 }
 
 //funciones de llamada a los metodos de robot_impl.h
@@ -218,7 +260,13 @@ void FRANKA::Implementation::finishMotion(
     const research_interface::robot::MotionGeneratorCommand* motion_command,
     const research_interface::robot::ControllerCommand* control_command) {
     try {
-        robot_impl->finishMotion(motion_id, motion_command, control_command);
+        // If control_command is not provided, pass nullptr
+        if (control_command == nullptr) {
+            robot_impl->finishMotion(motion_id, motion_command, nullptr);
+            throwOnMotionError(robot_state, motion_id); // Check for errors after finishing motion
+        } else {
+            robot_impl->finishMotion(motion_id, motion_command, control_command);
+        }
     } catch (const std::exception& e) {
         std::cerr << "Error while finishing motion: " << e.what() << std::endl;
     }
@@ -276,6 +324,17 @@ franka::Model FRANKA::Implementation::loadModel() {
     return robot_impl->loadModel();
 }
 
+// Add a method to encapsulate finishing the current motion
+void FRANKA::Implementation::finishCurrentMotion() {
+
+    // change flag to indicate motion is finished
+    motion_command.motion_generation_finished = true;
+
+    finishMotion(motion_id, &motion_command, nullptr);
+    std::cout << "Motion session finished." << std::endl;
+
+}
+
 // IMPLEMENTACION DE FUNCIONES
 bool FRANKA::Implementation::getJoints(RUT::VectorXd& joints) {
     try {
@@ -288,25 +347,44 @@ bool FRANKA::Implementation::getJoints(RUT::VectorXd& joints) {
 }
 
 bool FRANKA::Implementation::getCartesian(RUT::Vector7d& pose_xyzq) {
-    try {
-        franka::RobotState state = readOnce();
-        // O_T_EE is a 4x4 row-major matrix (16 elements)
-        Eigen::Affine3d transform(Eigen::Matrix4d::Map(state.O_T_EE.data()));
-        Eigen::Vector3d position = transform.translation();
-        Eigen::Quaterniond quat(transform.rotation());
+  try {
+    const auto state = readOnce();  // or robot_.readOnce();
+    const auto& T = state.O_T_EE;   // column-major, 16 elements
 
-        pose_xyzq[0] = position.x();
-        pose_xyzq[1] = position.y();
-        pose_xyzq[2] = position.z();
-        pose_xyzq[3] = quat.x();
-        pose_xyzq[4] = quat.y();
-        pose_xyzq[5] = quat.z();
-        pose_xyzq[6] = quat.w();
+    // Map to Eigen (column-major)
+    Eigen::Matrix4d mat;
+    for (int c = 0; c < 4; ++c)
+      for (int r = 0; r < 4; ++r)
+        mat(r, c) = T[c * 4 + r];
 
-        return true;
-    } catch (...) {
-        return false;
-    }
+    // Optional: quick sanity
+    // assert(std::abs(mat(3,0))<1e-9 && std::abs(mat(3,1))<1e-9 && std::abs(mat(3,2))<1e-9 && std::abs(mat(3,3)-1.0)<1e-9);
+
+    Eigen::Affine3d tf(mat);
+    const Eigen::Vector3d p = tf.translation();
+    const Eigen::Quaterniond q(tf.rotation());  // already normalized
+
+    // IMPORTANT: store as [x, y, z, qx, qy, qz, qw]
+    pose_xyzq[0] = p.x();
+    pose_xyzq[1] = p.y();
+    pose_xyzq[2] = p.z();
+    pose_xyzq[3] = q.x();
+    pose_xyzq[4] = q.y();
+    pose_xyzq[5] = q.z();
+    pose_xyzq[6] = q.w();
+
+    return true;
+
+  } catch (const franka::Exception& e) {
+    std::cerr << "[Franka getCartesian] libfranka error: " << e.what() << std::endl;
+    return false;
+  } catch (const std::exception& e) {
+    std::cerr << "[Franka getCartesian] std::exception: " << e.what() << std::endl;
+    return false;
+  } catch (...) {
+    std::cerr << "[Franka getCartesian] unknown exception\n";
+    return false;
+  }
 }
 
 bool FRANKA::Implementation::getTorques(RUT::VectorXd& torques) {
@@ -320,18 +398,56 @@ bool FRANKA::Implementation::getTorques(RUT::VectorXd& torques) {
 }
 
 bool FRANKA::Implementation::setCartesian(const RUT::Vector7d& pose) {
-    if (pose.size() != 16) return false;  // Optional check
+  try {
+    // Input pose = [x, y, z, qx, qy, qz, qw]
+    const Eigen::Vector3d position(pose[0], pose[1], pose[2]);
+    const Eigen::Quaterniond quat(pose[6], pose[3], pose[4], pose[5]); // (w, x, y, z)
+    Eigen::Matrix3d rotation = quat.normalized().toRotationMatrix();
 
-    try {
-        research_interface::robot::MotionGeneratorCommand command;
-        std::copy(pose.data(), pose.data() + 16, command.O_T_EE_c.begin());
-        command.valid_elbow = true;
-        command.motion_generation_finished = false;
-        robot_impl->update(&command, nullptr);
+    // Build homogeneous transform matrix (Eigen is column-major by default)
+    Eigen::Matrix4d M = Eigen::Matrix4d::Identity();
+    M.block<3,3>(0,0) = rotation;
+    M.block<3,1>(0,3) = position;
+
+    // Convert Eigen matrix to std::array<double,16> in **column-major** order for libfranka
+    std::array<double, 16> O_T_EE_c{};
+    for (int c = 0; c < 4; ++c) {
+      for (int r = 0; r < 4; ++r) {
+        O_T_EE_c[c * 4 + r] = M(r, c);
+      }
+    }
+
+    // Filtering and rate limiting
+        O_T_EE_c = franka::cartesianLowpassFilter(
+            config.kDeltaT,
+            O_T_EE_c,
+            robot_state.O_T_EE_c,
+            franka::kDefaultCutoffFrequency
+        );
+
+        O_T_EE_c = franka::limitRate(
+            franka::kMaxTranslationalVelocity,
+            franka::kMaxTranslationalAcceleration,
+            franka::kMaxTranslationalJerk,
+            franka::kMaxRotationalVelocity,
+            franka::kMaxRotationalAcceleration,
+            franka::kMaxRotationalJerk,
+            O_T_EE_c,
+            robot_state.O_T_EE_c,
+            robot_state.O_dP_EE_c,
+            robot_state.O_ddP_EE_c
+        );
+
+        // Send command and update robot state
+        motion_command.O_T_EE_c = O_T_EE_c;
+        robot_state = update(&motion_command, nullptr);
+        throwOnMotionError(robot_state, motion_id);
         return true;
-    } catch (...) {
+    } catch (const std::exception& e) {
+        std::cerr << "Motion error: " << e.what() << std::endl;
         return false;
     }
+
 }
 
 bool FRANKA::Implementation::setJoints(const RUT::VectorXd& joints) {

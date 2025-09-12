@@ -334,13 +334,15 @@ int main() {
                 );
 
                 // Read initial robot state
-                franka::RobotState robot_state = franka_robot.update(nullptr, nullptr);
-                franka_robot.throwOnMotionError(robot_state, motion_id);
+                franka::RobotState robot_state = franka_robot.readOnce();
 
                 std::array<double, 16> initial_pose = robot_state.O_T_EE;
                 franka::Duration previous_time = robot_state.time;
                 franka::Duration period;
                 double time = 0.0;
+
+                //create timer from chrono
+                
 
                 while (!motion_command.motion_generation_finished) {
                     // Update time
@@ -348,7 +350,10 @@ int main() {
                     previous_time = robot_state.time;
                     time += period.toSec();
 
-                    constexpr double kRadius = 0.2;
+                    //print time
+                    std::cout << "Time: " << time << " s" << std::endl;
+
+                    constexpr double kRadius = 0.1;
                     double angle = M_PI / 4 * (1 - std::cos(M_PI / 5.0 * time));
                     double delta_x = kRadius * std::sin(angle);
                     double delta_z = kRadius * (std::cos(angle) - 1);
@@ -358,6 +363,13 @@ int main() {
                     motion_command.O_T_EE_c[12] += delta_x;  // Move in X (element 12 of 4x4 matrix)
                     //motion_command.O_T_EE_c[14] += delta_z;  // Move in Z (element 14 of 4x4 matrix)
 
+                    //print motion_command.O_T_EE_c
+                    std::cout << "motion_command.O_T_EE_c: ";
+                    for (const auto& val : motion_command.O_T_EE_c) {
+                        std::cout << val << " ";
+                    }
+                    std::cout << std::endl;
+
                     // Optionally apply low-pass filter (for smooth pose)
                     motion_command.O_T_EE_c = franka::cartesianLowpassFilter(
                         kDeltaT,
@@ -365,6 +377,12 @@ int main() {
                         robot_state.O_T_EE_c,
                         franka::kDefaultCutoffFrequency
                     );
+
+                    std::cout << "Filtered O_T_EE_c: ";
+                    for (const auto& val : motion_command.O_T_EE_c) {
+                        std::cout << val << " ";
+                    }
+                    std::cout << std::endl;
 
                     // Limit rate of the motion command
                     motion_command.O_T_EE_c = franka::limitRate(
@@ -379,6 +397,12 @@ int main() {
                         robot_state.O_dP_EE_c,
                         robot_state.O_ddP_EE_c
                     );
+
+                    std::cout << "Limited O_T_EE_c: ";
+                    for (const auto& val : motion_command.O_T_EE_c) {
+                        std::cout << val << " ";
+                    }
+                    std::cout << std::endl;
 
                     // Update robot
                     robot_state = franka_robot.update(&motion_command, nullptr);

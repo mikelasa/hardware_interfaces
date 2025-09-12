@@ -18,8 +18,18 @@ target_include_directories(FRANKA PUBLIC
 
 # test
 add_executable(test_franka src/test.cpp)
+add_executable(test_franka2 src/test_franka.cpp)
 target_link_libraries(
   test_franka FRANKA
+  ${RUT}
+  ${TIMER_LIB}
+  Franka::Franka
+  -lPocoNet
+  -lPocoFoundation
+  )
+
+target_link_libraries(
+  test_franka2 FRANKA
   ${RUT}
   ${TIMER_LIB}
   Franka::Franka
