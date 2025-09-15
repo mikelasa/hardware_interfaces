@@ -12,8 +12,8 @@ int main() {
     config.log_size = 50;
     config.tcp_mass = 0.0;
     config.tcp_inertia = 0.01;
-    config.deviation = {10.0, 3.12, 2 * M_PI}; // Example deviation values
-    config.kDeltaT = 1e-3; // Time step for filtering
+    config.deviation = {10.0, 3.12, 2 * M_PI}; // default deviation
+    config.kDeltaT = 1e-6; // Time step for filtering
     // set safety and operation modes for the robot
     config.robot_interface_config.zone_safety_mode =
         RobotSafetyMode::SAFETY_MODE_TRUNCATE;
@@ -65,6 +65,9 @@ int main() {
     franka_robot.getCartesian(pose0);
     RUT::Vector7d pose_ref = pose0;
 
+    //get wrench at the tool
+    RUT::Vector6d wrench;
+
     //print initial pose
     std::cout << "Initial Cartesian pose: " << pose_ref.transpose() << std::endl;
 
@@ -72,37 +75,33 @@ int main() {
     RUT::Timer timer;
 
     RUT::Vector3d target_position(0.430179, 0.0, 0.520758); // desired target
-    double trajectory_duration = 5.0; // seconds
+    double trajectory_duration = 20; // seconds
 
-    // Precompute trajectory points
-    int traj_steps = static_cast<int>(trajectory_duration * 1000.0); // 1kHz
+    // Precompute trajectory points, time steps 1e-3 (1kHz)
+    int traj_steps = static_cast<int>(trajectory_duration * 1000);
     std::vector<RUT::Vector3d> trajectory(traj_steps);
     for (int i = 0; i < traj_steps; ++i) {
         double t = static_cast<double>(i) / 1000.0;
         trajectory[i] = quintic_trajectory(pose_ref.head<3>(), target_position, t, trajectory_duration);
     }
-
+    
     try
     {
         // Start the timer for the control loop
         timer.tic();
+        int step = 0;
         while (true) {
 
             // Get elapsed time in milliseconds
-            double dt = timer.toc_ms()*0.1;
+            double dt = timer.toc_ms();
 
-            // Print current time and pose
-            printf("t = %f, pose: %f %f %f %f %f %f %f\n", dt, pose_ref[0], pose_ref[1],
-            pose_ref[2], pose_ref[3], pose_ref[4], pose_ref[5], pose_ref[6]);
-            
-            // Generate a small trajectory in X and Y using sin/cos functions
-            double dx = 0.05 * (1.0 - cos(1.2 * dt / 1000.0));
-            double dy = 0.05 * sin(1.2 * dt / 1000.0);
-            pose_ref[0] = pose0[0] + dx;
-            pose_ref[1] = pose0[1] + dy;
+            // Use precomputed trajectory
+            if (step < traj_steps) {
+                pose_ref[0] = trajectory[step][0];
+                pose_ref[1] = trajectory[step][1];
+                pose_ref[2] = trajectory[step][2];
+            }
 
-            std::cout << "Target Cartesian pose: " << dx << std::endl;
-            
             // Send the new pose to the robot in real time
             if (!franka_robot.setCartesian(pose_ref)) {
                 printf("setCartesian failed\n");
@@ -110,8 +109,16 @@ int main() {
                 break;
             }
 
-            // Stop after 10 seconds
-            if (dt > 500)
+            //get wrench at the tool (TEST)
+            franka_robot.getWrenchTool(wrench);
+            //std::cout << "Current wrench at tool: " << wrench.transpose() << std::endl;
+            //franka_robot.getWrenchBaseOnTool(wrench);
+            //std::cout << "Current wrench at base (from tool): " << wrench.transpose() << std::endl;
+
+            // Stop when trajectory is complete
+            step++;
+
+            if (step >= traj_steps)
             {
                 std::cout << "Finished Cartesian motion test." << std::endl;
                 // End motion

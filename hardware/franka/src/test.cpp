@@ -35,10 +35,12 @@ int main() {
     research_interface::robot::MotionGeneratorCommand motion_command{};
     research_interface::robot::ControllerCommand control_command{};
     
+    RUT::Vector6d wrench;
+
     double kDeltaT = 1e-3;
     
     // pick a test case to run with user input from prompt
-    int test_case = 5;
+    int test_case = 3;
 
     switch (test_case) {
         case 1:
@@ -79,8 +81,14 @@ int main() {
                     deviation, deviation
                 );
 
-                std::this_thread::sleep_for(std::chrono::seconds(4));  // wait 1s just to observe session
+                RUT::Timer timer;
 
+                while ( timer.toc_ms() < 20000)
+                {
+                    franka_robot.getWrenchTool(wrench);
+                    std::cout << "Current wrench at tool: " << wrench.transpose() << std::endl; 
+                }
+                
                 franka_robot.finishMotion(motion_id, nullptr, nullptr);
                 std::cout << "[Test 3] Motion session finished successfully." << std::endl;
             } catch (const std::exception& e) {

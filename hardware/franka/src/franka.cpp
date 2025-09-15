@@ -66,11 +66,14 @@ struct FRANKA::Implementation {
     const franka::RobotState& getLastRobotState() const { return robot_state; }
     bool getJoints(RUT::VectorXd& joints);
     bool getTorques(RUT::VectorXd& torques);
+    bool getWrenchBaseOnTool(RUT::Vector6d& wrench);
+    bool getWrenchTool(RUT::Vector6d& wrench);
 
     // metodos para setear estado del robot
     bool setCartesian(const RUT::Vector7d& pose_xyzq);
     bool setJoints(const RUT::VectorXd& joints);
     bool setTorques(const RUT::VectorXd& torques);
+
 
     //metodos de robot_impl.h
     franka::RobotState readOnce();
@@ -230,6 +233,14 @@ void FRANKA::finishCurrentMotion() {
     impl_->finishCurrentMotion();
 }
 
+bool FRANKA::getWrenchBaseOnTool(RUT::Vector6d& wrench) {
+    return impl_->getWrenchBaseOnTool(wrench);
+}
+
+bool FRANKA::getWrenchTool(RUT::Vector6d& wrench) {
+    return impl_->getWrenchTool(wrench);
+}
+
 //funciones de llamada a los metodos de robot_impl.h
 franka::RobotState FRANKA::Implementation::readOnce() {
     return robot_impl->readOnce();
@@ -262,6 +273,7 @@ void FRANKA::Implementation::finishMotion(
     try {
         // If control_command is not provided, pass nullptr
         if (control_command == nullptr) {
+
             robot_impl->finishMotion(motion_id, motion_command, nullptr);
             throwOnMotionError(robot_state, motion_id); // Check for errors after finishing motion
         } else {
@@ -324,7 +336,6 @@ franka::Model FRANKA::Implementation::loadModel() {
     return robot_impl->loadModel();
 }
 
-// Add a method to encapsulate finishing the current motion
 void FRANKA::Implementation::finishCurrentMotion() {
 
     // change flag to indicate motion is finished
@@ -478,6 +489,26 @@ bool FRANKA::Implementation::setTorques(const RUT::VectorXd& torques) {
         research_interface::robot::ControllerCommand command;
         std::copy(torques.data(), torques.data() + 7, command.tau_J_d.begin());
         robot_impl->update(nullptr, &command);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool FRANKA::Implementation::getWrenchBaseOnTool(RUT::Vector6d& wrench) {
+    try {
+        franka::RobotState state = readOnce();
+        wrench = Eigen::Map<const RUT::Vector6d>(state.O_F_ext_hat_K.data());
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool FRANKA::Implementation::getWrenchTool(RUT::Vector6d& wrench) {
+    try {
+        franka::RobotState state = readOnce();
+        wrench = Eigen::Map<const RUT::Vector6d>(state.K_F_ext_hat_K.data());
         return true;
     } catch (...) {
         return false;

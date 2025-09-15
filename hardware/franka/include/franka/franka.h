@@ -74,6 +74,8 @@ class FRANKA : public RobotInterfaces {
         bool setJoints(const RUT::VectorXd& joints) override;
         bool getTorques(RUT::VectorXd& torques);
         bool setTorques(const RUT::VectorXd& torques);
+        bool getWrenchBaseOnTool(RUT::Vector6d& wrench);
+        bool getWrenchTool(RUT::Vector6d& wrench);
 
         /* funciones de robot_impl.h 
         * readOnce lee el estado del robot una vez
