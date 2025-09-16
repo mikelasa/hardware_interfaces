@@ -30,7 +30,7 @@ class FRANKA : public RobotInterfaces {
             double tcp_mass{0.1};
             double tcp_inertia{0.0};
             RUT::Vector3d deviation{10.0, 3.12, 2 * M_PI};
-            double kDeltaT{1e-5}; // Time step for filtering and rate limiting
+            double kDeltaT{1e-3}; // Time step for filtering and rate limiting
 
             RobotInterfaceConfig robot_interface_config{};
     

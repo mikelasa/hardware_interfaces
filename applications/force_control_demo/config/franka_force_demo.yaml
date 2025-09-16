@@ -1,0 +1,57 @@
+
+ur_rtde:
+  robot_ip: "192.168.2.106"
+  rtde_frequency: 500.0
+  rt_receive_priority: 90
+  rt_control_priority: 85
+  interface_priority: 80
+  linear_vel: 0.5
+  linear_acc: 0.5
+  servoL_lookahead_time: 0.1
+  servoL_gain: 600
+  robot_interface_config:
+    zone_safety_mode: "SAFETY_MODE_TRUNCATE"
+    incre_safety_mode: "SAFETY_MODE_STOP"
+    operation_mode: "OPERATION_MODE_CARTESIAN"
+    max_incre_m: 0.03
+    max_incre_rad: 0.2
+    max_incre_joint_rad: 0.0628
+    safe_zone: [-0.5, 0.7, -0.9, -0.2, 0.2, 0.8]
+
+franka:
+  robot_ip: "172.17.6.164"
+  log_size: 50
+  tcp_mass: 0.0
+  tcp_inertia: 0.01
+  deviation: [10.0, 3.12, 6.283185307179586]
+  kDeltaT: 1e-3
+  robot_interface_config:
+    zone_safety_mode: "SAFETY_MODE_TRUNCATE"
+    incre_safety_mode: "SAFETY_MODE_STOP"
+    operation_mode: "OPERATION_MODE_CARTESIAN"
+    max_incre_m: 0.03
+    max_incre_rad: 0.2
+    max_incre_joint_rad: 0.0628
+    safe_zone: [-0.5, 0.7, -0.9, -0.2, 0.2, 0.8]
+
+admittance_controller:
+  dt: 0.001
+  log_to_file: false
+  log_file_path: "/home/mikel/ACP/hardware_interfaces/applications/force_control_demo/src/admittance_controller.log"
+  compliance6d:
+    #stiffness: [200, 200, 300, 2, 2, 2]
+    #damping: [10, 10, 10, 0.3, 0.3, 0.3]
+    #inertia: [0.1, 0.1, 0.1, 0.001, 0.001, 0.001]
+    stiffness: [0, 0, 0, 0, 0, 0]
+    damping: [0, 0, 0, 0, 0, 0]
+    inertia: [0.1, 0.1, 0.1, 0.001, 0.001, 0.001]
+  max_spring_force_magnitude: 20
+  max_spring_torque_magnitude: 2.0
+  direct_force_control_gains:
+    P_trans: 0.0
+    I_trans: 0
+    D_trans: 0
+    P_rot: 0.0
+    I_rot: 0
+    D_rot: 0
+  direct_force_control_I_limit: [0, 0, 0, 0, 0, 0]

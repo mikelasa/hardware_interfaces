@@ -6,6 +6,9 @@ include_directories(
   include/
   yaml-cpp
   ${EIGEN3_INCLUDE_DIRS}
+  /home/mikel/ACP/libfranka-0.9.2/src/
+  /home/mikel/ACP/libfranka-0.9.2/include/franka/
+  /home/mikel/ACP/libfranka-0.9.2/common/include/
 )
 
 add_executable(ur_demo src/demo_with_ur.cc)
@@ -25,4 +28,15 @@ target_link_libraries(coinft_demo
   ${RUT}
   ${FORCE_CONTROLLERS}
   ${YAMLLib}
+)
+
+add_executable(demo_with_franka src/demo_with_franka.cc)
+target_link_libraries(demo_with_franka
+  HI_COMMON
+  FRANKA
+  ${RUT}
+  ${FORCE_CONTROLLERS}
+  ${YAMLLib}
+  -lPocoNet
+  -lPocoFoundation
 )
