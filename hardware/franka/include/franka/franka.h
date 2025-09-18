@@ -28,9 +28,17 @@ class FRANKA : public RobotInterfaces {
             std::string robot_ip{};
             double log_size{1000};
             double tcp_mass{0.1};
-            double tcp_inertia{0.0};
+            std::array<double, 3> fx_c_load{{0.0, 0.0, 0.0}}; // default origin
+            std::array<double, 9> tcp_inertia{{0.0, 0.0, 0.0,
+                                           0.0, 0.0, 0.0,
+                                           0.0, 0.0, 0.0}}; // default inertia
             RUT::Vector3d deviation{10.0, 3.12, 2 * M_PI};
             double kDeltaT{1e-3}; // Time step for filtering and rate limiting
+            std::string realtime_config{"enforce"}; // "ignore" or "enforce"
+            std::string controller_mode{"cartesian_impedance"}; // "joint_impedance", "cartesian_impedance", "external_controller"
+            std::string motion_generator_mode{"cartesian_position"}; // "joint_position", "joint_velocity", "cartesian_position", "cartesian_velocity"
+            std::array<double, 7> setJointImpedance{{0, 0, 0, 0, 0, 0, 0}};
+            std::array<double, 6> setCartesianImpedance{{0, 0, 0, 0, 0, 0}};
 
             RobotInterfaceConfig robot_interface_config{};
     
@@ -40,9 +48,16 @@ class FRANKA : public RobotInterfaces {
                     log_size = node["log_size"].as<double>();
                     robot_interface_config.deserialize(node["robot_interface_config"]);
                     tcp_mass = node["tcp_mass"].as<double>();
-                    tcp_inertia = node["tcp_inertia"].as<double>();
+
+                    fx_c_load = node["fx_c_load"].as<std::array<double, 3>>();
+                    tcp_inertia = node["tcp_inertia"].as<std::array<double, 9>>();
                     deviation = RUT::deserialize_vector<RUT::Vector3d>(node["deviation"]);
                     kDeltaT = node["kDeltaT"].as<double>();
+                    realtime_config = node["realtime_config"].as<std::string>();
+                    controller_mode = node["controller_mode"].as<std::string>();
+                    motion_generator_mode = node["motion_generator_mode"].as<std::string>();
+                    setJointImpedance = node["setJointImpedance"].as<std::array<double, 7>>();
+                    setCartesianImpedance = node["setCartesianImpedance"].as<std::array<double, 6>>();
                 } catch (const std::exception& e) {
                     std::cerr << "Failed to load the config file: " << e.what() << std::endl;
                     return false;
@@ -53,8 +68,6 @@ class FRANKA : public RobotInterfaces {
 
         FRANKA(const FRANKAConfig& config);
         virtual ~FRANKA();
-
-        static constexpr research_interface::robot::Move::Deviation kDefaultDeviation{10.0, 3.12, 2 * M_PI};
 
         /*
             *get Cartesian pose of the robot tool. Distances are in mm.

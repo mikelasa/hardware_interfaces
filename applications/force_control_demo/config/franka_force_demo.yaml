@@ -25,6 +25,7 @@ franka:
   tcp_inertia: 0.01
   deviation: [10.0, 3.12, 6.283185307179586]
   kDeltaT: 1e-3
+  realtime_config: "enforce"
   robot_interface_config:
     zone_safety_mode: "SAFETY_MODE_TRUNCATE"
     incre_safety_mode: "SAFETY_MODE_STOP"

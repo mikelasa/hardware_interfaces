@@ -32,7 +32,7 @@ int main() {
 
     // open file
     const std::string CONFIG_PATH =
-        "/home/mikel/ACP/hardware_interfaces/applications/force_control_demo/config/franka_force_demo.yaml";
+        "/home/robotlab/ACP/hardware_interfaces/applications/force_control_demo/config/franka_force_demo.yaml";
 
     // load config
     YAML::Node config{};
@@ -69,12 +69,6 @@ int main() {
                         {0.0, 0.0, 0.0,
                         0.0, 0.0, 0.0,
                         0.0, 0.0, 0.0});
-
-    // Start the motion with Joint Impedance control and Joint Position motion generator
-    robot.startCartesianMotion(
-        research_interface::robot::Move::ControllerMode::kCartesianImpedance,
-        research_interface::robot::Move::MotionGeneratorMode::kCartesianPosition
-    );
 
     // get initial pose
     robot.getCartesian(pose);
