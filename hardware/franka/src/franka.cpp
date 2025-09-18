@@ -547,8 +547,8 @@ bool FRANKA::Implementation::setTorques(const RUT::VectorXd& torques) {
 
 bool FRANKA::Implementation::getWrenchBaseOnTool(RUT::Vector6d& wrench) {
     try {
-        franka::RobotState state = readOnce();
-        wrench = Eigen::Map<const RUT::Vector6d>(state.O_F_ext_hat_K.data());
+        robot_state = readOnce();
+        wrench = Eigen::Map<const RUT::Vector6d>(robot_state.O_F_ext_hat_K.data());
         return true;
     } catch (...) {
         return false;
@@ -557,6 +557,7 @@ bool FRANKA::Implementation::getWrenchBaseOnTool(RUT::Vector6d& wrench) {
 
 bool FRANKA::Implementation::getWrenchTool(RUT::Vector6d& wrench) {
     try {
+        robot_state = readOnce();
         wrench = Eigen::Map<const RUT::Vector6d>(robot_state.K_F_ext_hat_K.data());
         return true;
     } catch (...) {

@@ -90,7 +90,7 @@ int main() {
             }
             
             //get wrench at the tool (TEST)
-            franka_robot.getWrenchTool(wrench);
+            //franka_robot.getWrenchTool(wrench);
 
             //print target position
             std::cout << "Target joint positions: " << pos_ref.transpose() << std::endl;

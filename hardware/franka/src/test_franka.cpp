@@ -16,10 +16,10 @@ int main() {
                           0.0, 0.0, 0.0,
                           0.0, 0.0, 0.0}; // default inertia
     config.deviation = {10.0, 3.12, 2 * M_PI}; // default deviation
-    config.kDeltaT = 1e-3; // Time step for filtering
+    config.kDeltaT = 1e-4; // Time step for filtering
     config.realtime_config = "ignore";
-    config.controller_mode = "cartesian_impedance";
-    config.motion_generator_mode = "cartesian_position";    
+    config.setJointImpedance = {3000, 3000, 3000, 2500, 2500, 2000, 2000};
+    config.setCartesianImpedance = {1000, 1000, 1000, 200, 200, 200};
 
     // set safety and operation modes for the robot
     config.robot_interface_config.zone_safety_mode =
@@ -70,18 +70,20 @@ int main() {
     RUT::Vector7d pose0;
     franka_robot.getCartesian(pose0);
     RUT::Vector7d pose_ref = pose0;
+    //print initial pose
+    std::cout << "Initial Cartesian pose: " << pose_ref.transpose() << std::endl;
 
     //get wrench at the tool
     RUT::Vector6d wrench;
-
-    //print initial pose
-    std::cout << "Initial Cartesian pose: " << pose_ref.transpose() << std::endl;
 
     // Timer for control loop timing
     RUT::Timer timer;
 
     RUT::Vector3d target_position(0.430179, 0.0, 0.520758); // desired target
-    double trajectory_duration = 10; // seconds
+    // trajectory time from prompt
+    double trajectory_duration = 10.0; // seconds
+    std::cout << "choose trajectory duration in seconds (e.g., 10.0): " << std::endl;
+    std::cin >> trajectory_duration;
 
     // Precompute trajectory points, time steps 1e-3 (1kHz)
     int traj_steps = static_cast<int>(trajectory_duration * 1000);
@@ -115,8 +117,8 @@ int main() {
                 break;
             }
 
-            //get wrench at the tool (TEST)
-            franka_robot.getWrenchTool(wrench);
+            //get wrench at the tool OJO!!! si se hace readOnce dentro peta
+            //franka_robot.getWrenchTool(wrench);
             //std::cout << "Current wrench at tool: " << wrench.transpose() << std::endl;
             //franka_robot.getWrenchBaseOnTool(wrench);
             //std::cout << "Current wrench at base (from tool): " << wrench.transpose() << std::endl;
