@@ -16,6 +16,7 @@ int main() {
                           0.0, 0.0, 0.0}; // default inertia
     config.deviation = {10.0, 3.12, 2 * M_PI}; // default deviation
     config.kDeltaT = 1e-3; // Time step for filtering
+    config.CutoffFrequency = 100.0; // Cutoff frequency for low-pass filter
     config.realtime_config = "ignore";
     config.setJointImpedance = {3000, 3000, 3000, 2500, 2500, 2000, 2000};
     config.setCartesianImpedance = {1000, 1000, 1000, 200, 200, 200};

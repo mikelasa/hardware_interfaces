@@ -4,7 +4,7 @@
 #include "rate_limiting.h"
 #include "franka/model.h"
 #include <chrono>
-
+#include <fstream> 
 using namespace std::chrono;
 
 template <class T, size_t N>
@@ -350,6 +350,52 @@ int main() {
                 {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}},
                 {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}});
 
+                //save directory
+                std::string save_directory = "/home/robotlab/test_cases.csv";
+
+                // A thread for reading states and the other for control.
+                struct {
+                    std::mutex mutex;
+                    bool has_data;
+                    std::array<double, 7> q_d;
+                    std::array<double, 7> dq_d;
+                    std::array<double, 7> ddq_d;
+                    RUT::Vector6d O_dP_EE_c;
+                    RUT::Vector6d O_ddP_EE_c;
+                    double time;
+                    double delta;
+                } save_data{};
+                std::atomic_bool running{true};
+
+                //start print thread
+                std::thread print_thread([&save_data, &running, save_directory]() {
+                    std::ofstream file(save_directory);
+                    if (!file) {
+                        std::cerr << "Could not open file for writing: " << save_directory << std::endl;
+                        return;
+                    }
+
+                        while (running) {
+                            if (save_data.mutex.try_lock()) {
+                                if (save_data.has_data) {
+                                    for (const auto& val : save_data.q_d) file << val << ",";
+                                    for (const auto& val : save_data.dq_d) file << val << ",";
+                                    for (const auto& val : save_data.ddq_d) file << val << ",";
+                                    for (const auto& val : save_data.O_dP_EE_c) file << val << ",";
+                                    for (const auto& val : save_data.O_ddP_EE_c) file << val << ",";
+                                    file << save_data.delta << ",";
+                                    file << save_data.time << ",";
+                                    file << "\n";
+                                    save_data.has_data = false;
+                                }
+                                save_data.mutex.unlock();
+                            }
+                            
+                        }
+
+                        file.close();
+                    });
+
 
                 uint32_t motion_id = franka_robot.startMotion(
                     research_interface::robot::Move::ControllerMode::kCartesianImpedance,
@@ -366,8 +412,6 @@ int main() {
                 double time = 0.0;
 
                 //create timer from chrono
-                
-
                 while (!motion_command.motion_generation_finished) {
                     // Update time
                     period = robot_state.time - previous_time;
@@ -378,7 +422,7 @@ int main() {
                     std::cout << "Time: " << time << " s" << std::endl;
 
                     constexpr double kRadius = 0.1;
-                    double angle = M_PI / 4 * (1 - std::cos(M_PI / 5.0 * time));
+                    double angle = M_PI / 4 * (1 - std::cos(M_PI / 3.0 * time));
                     double delta_x = kRadius * std::sin(angle);
                     double delta_z = kRadius * (std::cos(angle) - 1);
 
@@ -387,13 +431,6 @@ int main() {
                     motion_command.O_T_EE_c[12] += delta_x;  // Move in X (element 12 of 4x4 matrix)
                     //motion_command.O_T_EE_c[14] += delta_z;  // Move in Z (element 14 of 4x4 matrix)
 
-                    //print motion_command.O_T_EE_c
-                    std::cout << "motion_command.O_T_EE_c: ";
-                    for (const auto& val : motion_command.O_T_EE_c) {
-                        std::cout << val << " ";
-                    }
-                    std::cout << std::endl;
-
                     // Optionally apply low-pass filter (for smooth pose)
                     motion_command.O_T_EE_c = franka::cartesianLowpassFilter(
                         kDeltaT,
@@ -401,12 +438,6 @@ int main() {
                         robot_state.O_T_EE_c,
                         franka::kDefaultCutoffFrequency
                     );
-
-                    std::cout << "Filtered O_T_EE_c: ";
-                    for (const auto& val : motion_command.O_T_EE_c) {
-                        std::cout << val << " ";
-                    }
-                    std::cout << std::endl;
 
                     // Limit rate of the motion command
                     motion_command.O_T_EE_c = franka::limitRate(
@@ -422,11 +453,18 @@ int main() {
                         robot_state.O_ddP_EE_c
                     );
 
-                    std::cout << "Limited O_T_EE_c: ";
-                    for (const auto& val : motion_command.O_T_EE_c) {
-                        std::cout << val << " ";
+                    //log data
+                    if (save_data.mutex.try_lock()) {
+                        save_data.q_d = robot_state.q_d;
+                        save_data.dq_d = robot_state.dq_d;
+                        save_data.ddq_d = robot_state.ddq_d;
+                        save_data.O_dP_EE_c = Eigen::Map<const RUT::Vector6d>(robot_state.O_dP_EE_c.data(), 6);
+                        save_data.O_ddP_EE_c = Eigen::Map<const RUT::Vector6d>(robot_state.O_ddP_EE_c.data(), 6);
+                        save_data.delta = delta_x;
+                        save_data.time = time;
+                        save_data.has_data = true;
+                        save_data.mutex.unlock();
                     }
-                    std::cout << std::endl;
 
                     // Update robot
                     robot_state = franka_robot.update(&motion_command, nullptr);
@@ -437,7 +475,7 @@ int main() {
                         motion_command.motion_generation_finished = true;
                     }
 
-                }
+                } // <-- closes the while loop
 
                 // End motion
                 franka_robot.finishMotion(motion_id, &motion_command, nullptr);
@@ -448,6 +486,11 @@ int main() {
                 std::cout << "[Test 7] Final EE pose: ";
                 for (int i = 0; i < 16; ++i) std::cout << final_state.O_T_EE[i] << " ";
                 std::cout << std::endl;
+
+                running = false;
+                if (print_thread.joinable()) {
+                    print_thread.join();
+                }
 
             } catch (const std::exception& e) {
                 std::cerr << "[Test 7] Cartesian motion error: " << e.what() << std::endl;

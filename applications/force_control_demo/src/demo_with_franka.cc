@@ -56,13 +56,13 @@ int main() {
     RUT::Vector6d wrench, wrench0, wrench_WTr;
 
     //set impedance to robot
-    robot.setJointImpedance({{3000, 3000, 3000, 2500, 2500, 2000, 2000}});
-    robot.setCartesianImpedance({{3000, 3000, 3000, 300, 300, 300}});
+    robot.setJointImpedance(robot_config.setJointImpedance);
+    robot.setCartesianImpedance(robot_config.setCartesianImpedance);
     robot.setCollisionBehavior(
-    {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
-    {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
-    {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}},
-    {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}});
+                                    {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
+                                    {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
+                                    {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}},
+                                    {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}});
 
     //set load to robot
     robot.setLoad(robot_config.tcp_mass, {0.0, 0.0, 0.1},
@@ -70,8 +70,15 @@ int main() {
                         0.0, 0.0, 0.0,
                         0.0, 0.0, 0.0});
 
+    //start motion with the configured modes
+    robot.startMotion(
+        research_interface::robot::Move::ControllerMode::kCartesianImpedance,
+        research_interface::robot::Move::MotionGeneratorMode::kCartesianPosition,
+        {robot_config.deviation[0], robot_config.deviation[1], robot_config.deviation[2]},
+        {robot_config.deviation[0], robot_config.deviation[1], robot_config.deviation[2]}
+    );  
+
     // get initial pose
-    robot.getCartesian(pose);
     robot.getCartesian(pose);
     robot.getWrenchTool(wrench0);
 
@@ -79,21 +86,24 @@ int main() {
     std::cout << "wrench0: " << wrench0.transpose() << std::endl;
     std::cout << "Starting in 2 seconds ..." << std::endl;
     wrench0.setZero();
-    wrench_WTr.setZero();
-    // desired reference pose and zero force reference
-    pose_ref = pose;
-    controller.setRobotReference(pose_ref, wrench_WTr);
-    controller.step(pose_ref); // prime once
     sleep(2.0);
+
+    robot.setCartesian(pose); // to avoid initial jump
 
     // initialize controller
     controller.init(time0, admittance_config, pose);
-
+    // one step to initialize internal variables
+    controller.step(pose_cmd); // warm start
     // transformation and number of force controlled axes
     // Start with regular admittance: all 6 axes are force-controlled
     RUT::Matrix6d Tr = RUT::Matrix6d::Identity();
     int n_af = 1;
     controller.setForceControlledAxis(Tr, n_af);
+
+    // desired reference pose and zero force reference
+    pose_ref = pose;
+    wrench_WTr.setZero();
+
 
     try
     {
@@ -106,11 +116,13 @@ int main() {
         while (true)
         {
 
-            double dt = timer.toc_ms();
-
-            // Update robot status
-            robot.getCartesian(pose);
-            robot.getWrenchTool(wrench);
+            // Update robot status, franka internally uses robot_state
+            //we cant use getCartesian and getWrenchTool cause we are pooling the robot twice otherwise per loop
+            // instead use helpers to expose robot_state interal variable to get the current pose and wrench
+            robot.getCurrentPose(pose);
+            robot.getCurrentWrench(wrench);
+            // print the robot pose
+            //printf("Current pose: %f %f %f %f %f %f %f\n", pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], pose[6]);
 
             // updates internal state with current pose and measured wrench
             controller.setRobotStatus(pose, wrench - wrench0);
@@ -121,14 +133,21 @@ int main() {
             // Compute the control output
             controller.step(pose_cmd);
 
+            //print target pose with timestamp
+            double dt = timer.toc_ms();
+            //printf("t = %f, target pose: %f %f %f %f %f %f %f\n", dt, pose_cmd[0], pose_cmd[1],
+                //pose_cmd[2], pose_cmd[3], pose_cmd[4], pose_cmd[5], pose_cmd[6]);
+
+            // during first iteration, send the 
             if (!robot.setCartesian(pose_cmd)) {
             printf("setCartesian failed\n");
             break;
             }
 
-            
+            //print current wrench
             //printf("t = %f, wrench: %f %f %f %f %f %f\n", dt, wrench[0], wrench[1],
                 //wrench[2], wrench[3], wrench[4], wrench[5]);
+
 
             if (dt > 50000) {
                 // End motion

@@ -11,6 +11,7 @@
 
 #include <RobotUtilities/spatial_utilities.h>
 #include <RobotUtilities/timer_linux.h>
+#include <array>
 #include <chrono>
 
 #include "hardware_interfaces/robot_interfaces.h"
@@ -34,6 +35,7 @@ class FRANKA : public RobotInterfaces {
                                            0.0, 0.0, 0.0}}; // default inertia
             RUT::Vector3d deviation{10.0, 3.12, 2 * M_PI};
             double kDeltaT{1e-3}; // Time step for filtering and rate limiting
+            double CutoffFrequency{100}; // Cutoff frequency for low-pass filter
             std::string realtime_config{"enforce"}; // "ignore" or "enforce"
             std::string controller_mode{"cartesian_impedance"}; // "joint_impedance", "cartesian_impedance", "external_controller"
             std::string motion_generator_mode{"cartesian_position"}; // "joint_position", "joint_velocity", "cartesian_position", "cartesian_velocity"
@@ -41,6 +43,21 @@ class FRANKA : public RobotInterfaces {
             std::array<double, 6> setCartesianImpedance{{0, 0, 0, 0, 0, 0}};
 
             RobotInterfaceConfig robot_interface_config{};
+
+            template <typename T, std::size_t N>
+            static std::array<T, N> deserialize_array(const YAML::Node& node) {
+                if (!node || !node.IsSequence()) {
+                    throw std::invalid_argument("Expected a YAML sequence when parsing std::array");
+                }
+                if (node.size() != N) {
+                    throw std::invalid_argument("YAML sequence size does not match std::array length");
+                }
+                std::array<T, N> data{};
+                for (std::size_t i = 0; i < N; ++i) {
+                    data[i] = node[i].as<T>();
+                }
+                return data;
+            }
     
             bool deserialize(const YAML::Node& node) {
                 try {
@@ -48,16 +65,16 @@ class FRANKA : public RobotInterfaces {
                     log_size = node["log_size"].as<double>();
                     robot_interface_config.deserialize(node["robot_interface_config"]);
                     tcp_mass = node["tcp_mass"].as<double>();
-
-                    fx_c_load = node["fx_c_load"].as<std::array<double, 3>>();
-                    tcp_inertia = node["tcp_inertia"].as<std::array<double, 9>>();
+                    fx_c_load = deserialize_array<double, 3>(node["fx_c_load"]);
+                    tcp_inertia = deserialize_array<double, 9>(node["tcp_inertia"]);
                     deviation = RUT::deserialize_vector<RUT::Vector3d>(node["deviation"]);
                     kDeltaT = node["kDeltaT"].as<double>();
+                    CutoffFrequency = node["CutoffFrequency"].as<double>();
                     realtime_config = node["realtime_config"].as<std::string>();
                     controller_mode = node["controller_mode"].as<std::string>();
                     motion_generator_mode = node["motion_generator_mode"].as<std::string>();
-                    setJointImpedance = node["setJointImpedance"].as<std::array<double, 7>>();
-                    setCartesianImpedance = node["setCartesianImpedance"].as<std::array<double, 6>>();
+                    setJointImpedance = deserialize_array<double, 7>(node["setJointImpedance"]);
+                    setCartesianImpedance = deserialize_array<double, 6>(node["setCartesianImpedance"]);
                 } catch (const std::exception& e) {
                     std::cerr << "Failed to load the config file: " << e.what() << std::endl;
                     return false;
@@ -89,6 +106,13 @@ class FRANKA : public RobotInterfaces {
         bool setTorques(const RUT::VectorXd& torques);
         bool getWrenchBaseOnTool(RUT::Vector6d& wrench);
         bool getWrenchTool(RUT::Vector6d& wrench);
+        
+        /* helpers to expose internal robot_state and get current pose and wrench without using readOnce()
+        */
+        bool getCurrentPose(RUT::Vector7d& pose_xyzq);
+        bool getCurrentWrench(RUT::Vector6d& wrench);
+        franka::Duration getElapsedTime();
+        franka::RobotState getRobotState(franka::RobotState& state);
 
         /* funciones de robot_impl.h 
         * readOnce lee el estado del robot una vez

@@ -27,7 +27,6 @@ struct FRANKA::Implementation {
     FRANKA::FRANKAConfig config{};
     // Persistent command objects
     research_interface::robot::MotionGeneratorCommand motion_command{};
-    research_interface::robot::ControllerCommand control_command{};
 
     //constructor que recibe la configuracion del robot
     Implementation(const FRANKA::FRANKAConfig& config) 
@@ -38,13 +37,13 @@ struct FRANKA::Implementation {
         //instancia la implementacion del robot
         std::unique_ptr<franka::Network> network;
         try {
-            std::cout << "[DEBUG] Attempting to create Network..." << std::endl;
+            std::cout << "Attempting to create Network..." << std::endl;
 
             network = std::make_unique<franka::Network>(
                 config.robot_ip,
                 research_interface::robot::kCommandPort);
 
-            std::cout << "[DEBUG] Network created successfully!" << std::endl;
+            std::cout << "Network created successfully!" << std::endl;
 
             } catch (const std::exception& e) {
             std::cerr << "[ERROR] Exception while creating Network: " << e.what() << std::endl;
@@ -90,10 +89,13 @@ struct FRANKA::Implementation {
     // Destructor que libera los recursos de la implementacion del robot
     ~Implementation() {}
 
+    // helpers para exponer el estado interno robot_state y obtener pose y wrench actuales sin usar readOnce()
+    bool getCurrentPose(RUT::Vector7d& pose_xyzq);
+    bool getCurrentWrench(RUT::Vector6d& wrench);
+    franka::Duration getElapsedTime();
+
     // metodos para obtener estado del robot
     bool getCartesian(RUT::Vector7d& pose_xyzq);
-    // Getter para el último estado
-    const franka::RobotState& getLastRobotState() const { return robot_state; }
     bool getJoints(RUT::VectorXd& joints);
     bool getTorques(RUT::VectorXd& torques);
     bool getWrenchBaseOnTool(RUT::Vector6d& wrench);
@@ -246,6 +248,19 @@ bool FRANKA::getWrenchTool(RUT::Vector6d& wrench) {
     return impl_->getWrenchTool(wrench);
 }
 
+bool FRANKA::getCurrentPose(RUT::Vector7d& pose_xyzq) {
+    return impl_->getCurrentPose(pose_xyzq);
+}
+
+bool FRANKA::getCurrentWrench(RUT::Vector6d& wrench) {
+    return impl_->getCurrentWrench(wrench);
+    
+}
+
+franka::Duration FRANKA::getElapsedTime() {
+    return impl_->getElapsedTime();
+}
+
 //funciones de llamada a los metodos de robot_impl.h
 franka::RobotState FRANKA::Implementation::readOnce() {
     return robot_impl->readOnce();
@@ -267,7 +282,6 @@ uint32_t FRANKA::Implementation::startMotion(
     try {
         // Reset cached commands for the new motion session
         motion_command = research_interface::robot::MotionGeneratorCommand{};
-        control_command = research_interface::robot::ControllerCommand{};
         motion_command.motion_generation_finished = false;
 
         motion_id = robot_impl->startMotion(controller_mode,
@@ -283,16 +297,12 @@ uint32_t FRANKA::Implementation::startMotion(
 void FRANKA::Implementation::finishMotion(
     uint32_t motion_id,
     const research_interface::robot::MotionGeneratorCommand* motion_command,
-    const research_interface::robot::ControllerCommand* control_command) {
+    const research_interface::robot::ControllerCommand* control_command) 
+    {
     try {
-        // If control_command is not provided, pass nullptr
-        if (control_command == nullptr) {
+        std::cout << "Finishing motion with ID: " << motion_id << std::endl;
+        robot_impl->finishMotion(motion_id, motion_command, control_command);
 
-            robot_impl->finishMotion(motion_id, motion_command, nullptr);
-            throwOnMotionError(robot_state, motion_id); // Check for errors after finishing motion
-        } else {
-            robot_impl->finishMotion(motion_id, motion_command, control_command);
-        }
     } catch (const std::exception& e) {
         std::cerr << "Error while finishing motion: " << e.what() << std::endl;
     }
@@ -352,9 +362,17 @@ franka::Model FRANKA::Implementation::loadModel() {
 
 void FRANKA::Implementation::finishCurrentMotion() {
 
-    // change flag to indicate motion is finished
-    motion_command.motion_generation_finished = true;
 
+    // Set flag to indicate motion is finished
+    motion_command.motion_generation_finished = true;
+    // Fill motion_command with 0 to avoid issues
+    motion_command.O_T_EE_c = robot_state.O_T_EE_c;
+    motion_command.O_dP_EE_c = robot_state.O_dP_EE_c;
+
+    // Send final update to robot with finished flag
+    robot_state = update(&motion_command, nullptr);
+
+    // Now call finishMotion with current motion_id and motion_command, no control_command
     finishMotion(motion_id, &motion_command, nullptr);
     std::cout << "Motion session finished." << std::endl;
 
@@ -375,30 +393,16 @@ bool FRANKA::Implementation::getJoints(RUT::VectorXd& joints) {
 
 bool FRANKA::Implementation::getCartesian(RUT::Vector7d& pose_xyzq) {
   try {
-    robot_state = readOnce();  // or robot_.readOnce();
-    const auto& T = robot_state.O_T_EE;   // column-major, 16 elements
 
-    // Map to Eigen (column-major)
-    Eigen::Matrix4d mat;
-    for (int c = 0; c < 4; ++c)
-      for (int r = 0; r < 4; ++r)
-        mat(r, c) = T[c * 4 + r];
+    //via RUT SE32pose
+    robot_state = readOnce();
+    RUT::Matrix4d M;
 
-    // Optional: quick sanity
-    // assert(std::abs(mat(3,0))<1e-9 && std::abs(mat(3,1))<1e-9 && std::abs(mat(3,2))<1e-9 && std::abs(mat(3,3)-1.0)<1e-9);
+    //convert from std::array<double,16> column-major to Eigen::Matrix4d
+    std::copy(robot_state.O_T_EE.begin(), robot_state.O_T_EE.end(), M.data());
 
-    Eigen::Affine3d tf(mat);
-    const Eigen::Vector3d p = tf.translation();
-    const Eigen::Quaterniond q(tf.rotation());  // already normalized
-
-    // IMPORTANT: store as [x, y, z, qx, qy, qz, qw]
-    pose_xyzq[0] = p.x();
-    pose_xyzq[1] = p.y();
-    pose_xyzq[2] = p.z();
-    pose_xyzq[3] = q.x();
-    pose_xyzq[4] = q.y();
-    pose_xyzq[5] = q.z();
-    pose_xyzq[6] = q.w();
+    //convert from Eigen::Matrix4d to RUT::Vector7d pose
+    RUT::SE32Pose(M, pose_xyzq);
 
     return true;
 
@@ -426,32 +430,42 @@ bool FRANKA::Implementation::getTorques(RUT::VectorXd& torques) {
 
 bool FRANKA::Implementation::setCartesian(const RUT::Vector7d& pose) {
   try {
-    // Input pose = [x, y, z, qx, qy, qz, qw]
-    const Eigen::Vector3d position(pose[0], pose[1], pose[2]);
-    const Eigen::Quaterniond quat(pose[6], pose[3], pose[4], pose[5]); // (w, x, y, z)
-    Eigen::Matrix3d rotation = quat.normalized().toRotationMatrix();
 
-    // Build homogeneous transform matrix (Eigen is column-major by default)
-    Eigen::Matrix4d M = Eigen::Matrix4d::Identity();
-    M.block<3,3>(0,0) = rotation;
-    M.block<3,1>(0,3) = position;
+        
+        // Manually build transformation matrix from pose
+        RUT::Vector3d position(pose[0], pose[1], pose[2]);
+        RUT::Quaterniond quat(pose[3], pose[4], pose[5], pose[6]); // (w, x, y, z)
+        RUT::Matrix3d rotation = quat.toRotationMatrix();
 
-    // Convert Eigen matrix to std::array<double,16> in **column-major** order for libfranka
-    std::array<double, 16> O_T_EE_c{};
-    for (int c = 0; c < 4; ++c) {
-      for (int r = 0; r < 4; ++r) {
-        O_T_EE_c[c * 4 + r] = M(r, c);
-      }
-    }
+        RUT::Matrix4d M = RUT::Matrix4d::Identity();
+        M.block<3,3>(0,0) = rotation;
+        M.block<3,1>(0,3) = position;
 
-    // Filtering and rate limiting
+        // convert from Eigen::Matrix4d to std::array<double,16> column-major
+        std::array<double, 16> O_T_EE_c{};
+        std::copy(M.data(), M.data() + 16, O_T_EE_c.begin());
+
+        // get rotation from robot_state and override the rotation part with the lectured one
+        //std::copy(rotation.data(), rotation.data() + 9, robot_state.O_T_EE.begin());
+        
+        // dont use pose convertion to matrix, just pass the robot_state.O_T_EE
+        //std::array<double, 16> O_T_EE_c{};
+        //std::copy(robot_state.O_T_EE_c.begin(), robot_state.O_T_EE_c.end(), O_T_EE_c.begin());
+
+        //measure current state vs commanded
+        //std::cout << "Current O_T_EE: " << Eigen::Map<const RUT::VectorXd>(robot_state.O_T_EE.data(), 16).transpose() << std::endl;
+        //std::cout << "Commanded O_T_EE_c: " << Eigen::Map<const RUT::VectorXd>(O_T_EE_c.data(), 16).transpose() << std::endl;
+
+        // Filtering and rate limiting
         O_T_EE_c = franka::cartesianLowpassFilter(
             config.kDeltaT,
             O_T_EE_c,
             robot_state.O_T_EE_c,
-            franka::kDefaultCutoffFrequency
+            config.CutoffFrequency
         );
 
+        
+        //std::cout << "After lowpass filter O_T_EE_c: " << Eigen::Map<const RUT::VectorXd>(O_T_EE_c.data(), 16).transpose() << std::endl;
         O_T_EE_c = franka::limitRate(
             franka::kMaxTranslationalVelocity,
             franka::kMaxTranslationalAcceleration,
@@ -464,12 +478,23 @@ bool FRANKA::Implementation::setCartesian(const RUT::Vector7d& pose) {
             robot_state.O_dP_EE_c,
             robot_state.O_ddP_EE_c
         );
-
+        //std::cout << "After rate limiting O_T_EE_c: " << Eigen::Map<const RUT::VectorXd>(O_T_EE_c.data(), 16).transpose() << std::endl;
+        
+        
+        //print q, dq and ddq
+        //std::cout << "robot_state.q_d: " << Eigen::Map<const RUT::VectorXd>(robot_state.q_d.data(), 7).transpose() << std::endl;
+        //std::cout << "robot_state.dq_d: " << Eigen::Map<const RUT::VectorXd>(robot_state.dq_d.data(), 7).transpose() << std::endl;
+        //std::cout << "robot_state.ddq_d: " << Eigen::Map<const RUT::VectorXd>(robot_state.ddq_d.data(), 7).transpose() << std::endl;
+        //print cartesian acceleration, convert from 16 to 7
+        //std::cout << "robot_state.O_dP_EE_c: " << Eigen::Map<const RUT::Vector6d>(robot_state.O_dP_EE_c.data(), 6).transpose() << std::endl;
+        //std::cout << "robot_state.O_ddP_EE_c: " << Eigen::Map<const RUT::Vector6d>(robot_state.O_ddP_EE_c.data(), 6).transpose() << std::endl;
+        
         // Send command and update robot state
         motion_command.O_T_EE_c = O_T_EE_c;
         robot_state = update(&motion_command, nullptr);
         throwOnMotionError(robot_state, motion_id);
         return true;
+
     } catch (const std::exception& e) {
         std::cerr << "Motion error: " << e.what() << std::endl;
         return false;
@@ -563,4 +588,55 @@ bool FRANKA::Implementation::getWrenchTool(RUT::Vector6d& wrench) {
     } catch (...) {
         return false;
     }
+}
+
+bool FRANKA::Implementation::getCurrentPose(RUT::Vector7d& pose_xyzq) {
+    try {
+        const auto& T = robot_state.O_T_EE;   // column-major, 16 elements
+
+        // Map to Eigen (column-major)
+        Eigen::Matrix4d mat;
+        for (int c = 0; c < 4; ++c)
+            for (int r = 0; r < 4; ++r)
+                mat(r, c) = T[c * 4 + r];
+
+        Eigen::Affine3d tf(mat);
+        const Eigen::Vector3d p = tf.translation();
+        const Eigen::Quaterniond q(tf.rotation());  // already normalized
+
+        // IMPORTANT: store as [x, y, z, qx, qy, qz, qw]
+        pose_xyzq[0] = p.x();
+        pose_xyzq[1] = p.y();
+        pose_xyzq[2] = p.z();
+        pose_xyzq[3] = q.x();
+        pose_xyzq[4] = q.y();
+        pose_xyzq[5] = q.z();
+        pose_xyzq[6] = q.w();
+
+        return true;
+
+    } catch (const std::exception& e) {
+        std::cerr << "[Franka getCurrentPose] std::exception: " << e.what() << std::endl;
+        return false;
+    } catch (...) {
+        std::cerr << "[Franka getCurrentPose] unknown exception\n";
+        return false;
+    }
+}
+
+bool FRANKA::Implementation::getCurrentWrench(RUT::Vector6d& wrench) {
+    try {
+        wrench = Eigen::Map<const RUT::Vector6d>(robot_state.K_F_ext_hat_K.data());
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "[Franka getCurrentWrench] std::exception: " << e.what() << std::endl;
+        return false;
+    } catch (...) {
+        std::cerr << "[Franka getCurrentWrench] unknown exception\n";
+        return false;
+    }
+}
+
+franka::Duration FRANKA::Implementation::getElapsedTime() {
+    return robot_state.time;
 }

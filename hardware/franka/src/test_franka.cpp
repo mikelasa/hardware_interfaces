@@ -3,8 +3,33 @@
 #include "robot_impl.h"
 #include "franka/model.h"
 #include <chrono>
+#include <fstream> 
+
 
 using namespace std::chrono;
+
+
+std::vector<double> loadDeltasFromCSV(const std::string& filename) {
+    std::vector<double> deltas;
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Could not open CSV file: " << filename << std::endl;
+        return deltas;
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+        try {
+            if (!line.empty()) {
+                deltas.push_back(std::stod(line));  // one value per row
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error parsing line: " << line << " -> " << e.what() << std::endl;
+        }
+    }
+
+    return deltas;
+}
 
 int main() {
     FRANKA::FRANKAConfig config;
@@ -16,7 +41,8 @@ int main() {
                           0.0, 0.0, 0.0,
                           0.0, 0.0, 0.0}; // default inertia
     config.deviation = {10.0, 3.12, 2 * M_PI}; // default deviation
-    config.kDeltaT = 1e-4; // Time step for filtering
+    config.kDeltaT = 1e-3; // Time step for filtering
+    config.CutoffFrequency = 100; // Cutoff frequency for low-pass filter
     config.realtime_config = "ignore";
     config.setJointImpedance = {3000, 3000, 3000, 2500, 2500, 2000, 2000};
     config.setCartesianImpedance = {1000, 1000, 1000, 200, 200, 200};
@@ -31,18 +57,7 @@ int main() {
     config.robot_interface_config.max_incre_m = 0.002;      // 1 m per second
     config.robot_interface_config.max_incre_rad = 0.00628;  // 3.14 per second
     config.robot_interface_config.safe_zone = {0.3, 0.65, -0.3, 0.4, 0.1, 0.4};
-
-    // Quintic trajectory generator
-    auto quintic_trajectory = [](const RUT::Vector3d& p0, const RUT::Vector3d& pf, double t, double T) {
-        double tau = std::min(std::max(t / T, 0.0), 1.0);
-        double tau2 = tau * tau;
-        double tau3 = tau2 * tau;
-        double tau4 = tau3 * tau;
-        double tau5 = tau4 * tau;
-        double s = 10 * tau3 - 15 * tau4 + 6 * tau5;
-        return p0 + s * (pf - p0);
-    };
-
+    
     // Instantiate Franka robot interface
     FRANKA franka_robot(config);
 
@@ -54,7 +69,7 @@ int main() {
                 {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}}, {{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}},
                 {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}},
                 {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}}, {{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}});
-
+        
     //set load to robot
     franka_robot.setLoad(config.tcp_mass, config.fx_c_load, config.tcp_inertia);
 
@@ -79,36 +94,46 @@ int main() {
     // Timer for control loop timing
     RUT::Timer timer;
 
-    RUT::Vector3d target_position(0.430179, 0.0, 0.520758); // desired target
-    // trajectory time from prompt
-    double trajectory_duration = 10.0; // seconds
-    std::cout << "choose trajectory duration in seconds (e.g., 10.0): " << std::endl;
-    std::cin >> trajectory_duration;
-
-    // Precompute trajectory points, time steps 1e-3 (1kHz)
-    int traj_steps = static_cast<int>(trajectory_duration * 1000);
-    std::vector<RUT::Vector3d> trajectory(traj_steps);
-    for (int i = 0; i < traj_steps; ++i) {
-        double t = static_cast<double>(i) / 1000.0;
-        trajectory[i] = quintic_trajectory(pose_ref.head<3>(), target_position, t, trajectory_duration);
+    // Send pose0 directly, do not modify or reconstruct
+    for (int i = 0; i < 30; ++i) {
+        franka_robot.setCartesian(pose0);
     }
-    
+
+    timer.set_loop_rate_hz(1000); // 1 kHz control loop
+
+    // to test timers
+    double time = 0.0;
+    franka::Duration previous_time = franka_robot.getElapsedTime();
+    franka::Duration period;
+
     try
     {
         // Start the timer for the control loop
         timer.tic();
-        int step = 0;
+        
         while (true) {
 
-            // Get elapsed time in milliseconds
-            double dt = timer.toc_ms();
+            // Using RUT::Timer
+            double timer_time = timer.toc_ms() / 1000.0;
 
-            // Use precomputed trajectory
-            if (step < traj_steps) {
-                pose_ref[0] = trajectory[step][0];
-                pose_ref[1] = trajectory[step][1];
-                pose_ref[2] = trajectory[step][2];
-            }
+            // Get elapsed time in milliseconds
+            timer.sleep_till_next();
+            period = franka_robot.getElapsedTime() - previous_time;
+            previous_time = franka_robot.getElapsedTime();
+            time += period.toSec();
+
+            // print every second
+            if  (time - int(time) < 0.001 )
+                {
+                    std::cout << "Timer time: " << timer_time << " s, "
+                        << "time: " << time << " s," << std::endl;
+                }
+                
+            constexpr double kRadius = 0.1; // Reduced amplitude for safer delta_x
+            double angle = M_PI / 4 * (1 - std::cos(M_PI / 5 * time));
+            double delta_x = kRadius * std::sin(angle);
+            pose_ref = pose0;
+            pose_ref[0] += delta_x;
 
             // Send the new pose to the robot in real time
             if (!franka_robot.setCartesian(pose_ref)) {
@@ -116,17 +141,8 @@ int main() {
 
                 break;
             }
-
-            //get wrench at the tool OJO!!! si se hace readOnce dentro peta
-            //franka_robot.getWrenchTool(wrench);
-            //std::cout << "Current wrench at tool: " << wrench.transpose() << std::endl;
-            //franka_robot.getWrenchBaseOnTool(wrench);
-            //std::cout << "Current wrench at base (from tool): " << wrench.transpose() << std::endl;
-
-            // Stop when trajectory is complete
-            step++;
-
-            if (step >= traj_steps)
+            
+            if (time >= 10)
             {
                 std::cout << "Finished Cartesian motion test." << std::endl;
                 // End motion
