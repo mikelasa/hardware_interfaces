@@ -41,6 +41,12 @@ class FRANKA : public RobotInterfaces {
             std::string motion_generator_mode{"cartesian_position"}; // "joint_position", "joint_velocity", "cartesian_position", "cartesian_velocity"
             std::array<double, 7> setJointImpedance{{0, 0, 0, 0, 0, 0, 0}};
             std::array<double, 6> setCartesianImpedance{{0, 0, 0, 0, 0, 0}};
+            double kMaxTranslationalVelocity{1.96};
+            double kMaxTranslationalAcceleration{12.99};
+            double kMaxTranslationalJerk{12500};
+            double kMaxRotationalVelocity{2.424};
+            double kMaxRotationalAcceleration{24.999};
+            double kMaxRotationalJerk{12500};
 
             RobotInterfaceConfig robot_interface_config{};
 
@@ -75,6 +81,12 @@ class FRANKA : public RobotInterfaces {
                     motion_generator_mode = node["motion_generator_mode"].as<std::string>();
                     setJointImpedance = deserialize_array<double, 7>(node["setJointImpedance"]);
                     setCartesianImpedance = deserialize_array<double, 6>(node["setCartesianImpedance"]);
+                    kMaxTranslationalVelocity = node["kMaxTranslationalVelocity"].as<double>();
+                    kMaxTranslationalAcceleration = node["kMaxTranslationalAcceleration"].as<double>();
+                    kMaxTranslationalJerk = node["kMaxTranslationalJerk"].as<double>();
+                    kMaxRotationalVelocity = node["kMaxRotationalVelocity"].as<double>();
+                    kMaxRotationalAcceleration = node["kMaxRotationalAcceleration"].as<double>();
+                    kMaxRotationalJerk = node["kMaxRotationalJerk"].as<double>();
                 } catch (const std::exception& e) {
                     std::cerr << "Failed to load the config file: " << e.what() << std::endl;
                     return false;
@@ -110,7 +122,7 @@ class FRANKA : public RobotInterfaces {
         /* helpers to expose internal robot_state and get current pose and wrench without using readOnce()
         */
         bool getCurrentPose(RUT::Vector7d& pose_xyzq);
-        bool getCurrentWrench(RUT::Vector6d& wrench);
+        bool getCurrentWrenchTool(RUT::Vector6d& wrench);
         franka::Duration getElapsedTime();
         franka::RobotState getRobotState(franka::RobotState& state);
 

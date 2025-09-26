@@ -91,7 +91,7 @@ struct FRANKA::Implementation {
 
     // helpers para exponer el estado interno robot_state y obtener pose y wrench actuales sin usar readOnce()
     bool getCurrentPose(RUT::Vector7d& pose_xyzq);
-    bool getCurrentWrench(RUT::Vector6d& wrench);
+    bool getCurrentWrenchTool(RUT::Vector6d& wrench);
     franka::Duration getElapsedTime();
 
     // metodos para obtener estado del robot
@@ -252,8 +252,8 @@ bool FRANKA::getCurrentPose(RUT::Vector7d& pose_xyzq) {
     return impl_->getCurrentPose(pose_xyzq);
 }
 
-bool FRANKA::getCurrentWrench(RUT::Vector6d& wrench) {
-    return impl_->getCurrentWrench(wrench);
+bool FRANKA::getCurrentWrenchTool(RUT::Vector6d& wrench) {
+    return impl_->getCurrentWrenchTool(wrench);
     
 }
 
@@ -445,17 +445,6 @@ bool FRANKA::Implementation::setCartesian(const RUT::Vector7d& pose) {
         std::array<double, 16> O_T_EE_c{};
         std::copy(M.data(), M.data() + 16, O_T_EE_c.begin());
 
-        // get rotation from robot_state and override the rotation part with the lectured one
-        //std::copy(rotation.data(), rotation.data() + 9, robot_state.O_T_EE.begin());
-        
-        // dont use pose convertion to matrix, just pass the robot_state.O_T_EE
-        //std::array<double, 16> O_T_EE_c{};
-        //std::copy(robot_state.O_T_EE_c.begin(), robot_state.O_T_EE_c.end(), O_T_EE_c.begin());
-
-        //measure current state vs commanded
-        //std::cout << "Current O_T_EE: " << Eigen::Map<const RUT::VectorXd>(robot_state.O_T_EE.data(), 16).transpose() << std::endl;
-        //std::cout << "Commanded O_T_EE_c: " << Eigen::Map<const RUT::VectorXd>(O_T_EE_c.data(), 16).transpose() << std::endl;
-
         // Filtering and rate limiting
         O_T_EE_c = franka::cartesianLowpassFilter(
             config.kDeltaT,
@@ -464,31 +453,19 @@ bool FRANKA::Implementation::setCartesian(const RUT::Vector7d& pose) {
             config.CutoffFrequency
         );
 
-        
-        //std::cout << "After lowpass filter O_T_EE_c: " << Eigen::Map<const RUT::VectorXd>(O_T_EE_c.data(), 16).transpose() << std::endl;
         O_T_EE_c = franka::limitRate(
-            franka::kMaxTranslationalVelocity,
-            franka::kMaxTranslationalAcceleration,
-            franka::kMaxTranslationalJerk,
-            franka::kMaxRotationalVelocity,
-            franka::kMaxRotationalAcceleration,
-            franka::kMaxRotationalJerk,
+            config.kMaxTranslationalVelocity,
+            config.kMaxTranslationalAcceleration,
+            config.kMaxTranslationalJerk,
+            config.kMaxRotationalVelocity,
+            config.kMaxRotationalAcceleration,
+            config.kMaxRotationalJerk,
             O_T_EE_c,
             robot_state.O_T_EE_c,
             robot_state.O_dP_EE_c,
             robot_state.O_ddP_EE_c
         );
-        //std::cout << "After rate limiting O_T_EE_c: " << Eigen::Map<const RUT::VectorXd>(O_T_EE_c.data(), 16).transpose() << std::endl;
-        
-        
-        //print q, dq and ddq
-        //std::cout << "robot_state.q_d: " << Eigen::Map<const RUT::VectorXd>(robot_state.q_d.data(), 7).transpose() << std::endl;
-        //std::cout << "robot_state.dq_d: " << Eigen::Map<const RUT::VectorXd>(robot_state.dq_d.data(), 7).transpose() << std::endl;
-        //std::cout << "robot_state.ddq_d: " << Eigen::Map<const RUT::VectorXd>(robot_state.ddq_d.data(), 7).transpose() << std::endl;
-        //print cartesian acceleration, convert from 16 to 7
-        //std::cout << "robot_state.O_dP_EE_c: " << Eigen::Map<const RUT::Vector6d>(robot_state.O_dP_EE_c.data(), 6).transpose() << std::endl;
-        //std::cout << "robot_state.O_ddP_EE_c: " << Eigen::Map<const RUT::Vector6d>(robot_state.O_ddP_EE_c.data(), 6).transpose() << std::endl;
-        
+
         // Send command and update robot state
         motion_command.O_T_EE_c = O_T_EE_c;
         robot_state = update(&motion_command, nullptr);
@@ -624,7 +601,7 @@ bool FRANKA::Implementation::getCurrentPose(RUT::Vector7d& pose_xyzq) {
     }
 }
 
-bool FRANKA::Implementation::getCurrentWrench(RUT::Vector6d& wrench) {
+bool FRANKA::Implementation::getCurrentWrenchTool(RUT::Vector6d& wrench) {
     try {
         wrench = Eigen::Map<const RUT::Vector6d>(robot_state.K_F_ext_hat_K.data());
         return true;

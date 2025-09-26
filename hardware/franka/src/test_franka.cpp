@@ -46,6 +46,12 @@ int main() {
     config.realtime_config = "ignore";
     config.setJointImpedance = {3000, 3000, 3000, 2500, 2500, 2000, 2000};
     config.setCartesianImpedance = {1000, 1000, 1000, 200, 200, 200};
+    config.kMaxTranslationalVelocity = 0.25;
+    config.kMaxTranslationalAcceleration = 1.0;
+    config.kMaxTranslationalJerk = 500;
+    config.kMaxRotationalVelocity = 0.25;
+    config.kMaxRotationalAcceleration = 1.0;
+    config.kMaxRotationalJerk = 500;
 
     // set safety and operation modes for the robot
     config.robot_interface_config.zone_safety_mode =
@@ -116,6 +122,8 @@ int main() {
             // Using RUT::Timer
             double timer_time = timer.toc_ms() / 1000.0;
 
+            //franka_robot.getCurrentPose(pose0);
+
             // Get elapsed time in milliseconds
             timer.sleep_till_next();
             period = franka_robot.getElapsedTime() - previous_time;
@@ -133,10 +141,10 @@ int main() {
             double angle = M_PI / 4 * (1 - std::cos(M_PI / 5 * time));
             double delta_x = kRadius * std::sin(angle);
             pose_ref = pose0;
-            pose_ref[0] += delta_x;
+            //pose_ref[0] += delta_x;
 
             // Send the new pose to the robot in real time
-            if (!franka_robot.setCartesian(pose_ref)) {
+            if (!franka_robot.setCartesian(pose0)) {
                 printf("setCartesian failed\n");
 
                 break;

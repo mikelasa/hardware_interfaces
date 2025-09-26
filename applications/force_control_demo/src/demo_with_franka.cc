@@ -52,7 +52,7 @@ int main() {
     AdmittanceController controller;
     RUT::Timer timer;
     RUT::TimePoint time0 = timer.tic();
-    RUT::Vector7d pose, pose_ref, pose_cmd;
+    RUT::Vector7d pose, pose_ref, pose_cmd = RUT::Vector7d::Zero();
     RUT::Vector6d wrench, wrench0, wrench_WTr;
 
     //set impedance to robot
@@ -78,51 +78,54 @@ int main() {
         {robot_config.deviation[0], robot_config.deviation[1], robot_config.deviation[2]}
     );  
 
+
     // get initial pose
     robot.getCartesian(pose);
-    robot.getWrenchTool(wrench0);
 
-    // get average wrench
-    std::cout << "wrench0: " << wrench0.transpose() << std::endl;
-    std::cout << "Starting in 2 seconds ..." << std::endl;
+    // Average the initial wrench over 2 seconds (200 samples at 1 kHz)
     wrench0.setZero();
-    sleep(2.0);
-
-    robot.setCartesian(pose); // to avoid initial jump
+    int avg_samples = 200;
+    for (int i = 0; i < avg_samples; ++i) {
+        RUT::Vector6d w;
+        robot.getCurrentWrenchTool(w);
+        wrench0 += w;
+        usleep(10000); // 10 ms per sample (100 Hz)
+    }
+    wrench0 /= avg_samples;
+    std::cout << "Averaged wrench0: " << wrench0.transpose() << std::endl;
+    std::cout << "Starting control ..." << std::endl;
 
     // initialize controller
     controller.init(time0, admittance_config, pose);
-    // one step to initialize internal variables
-    controller.step(pose_cmd); // warm start
+
     // transformation and number of force controlled axes
-    // Start with regular admittance: all 6 axes are force-controlled
     RUT::Matrix6d Tr = RUT::Matrix6d::Identity();
-    int n_af = 1;
+    int n_af = 6;
     controller.setForceControlledAxis(Tr, n_af);
 
     // desired reference pose and zero force reference
     pose_ref = pose;
     wrench_WTr.setZero();
 
-
     try
     {
 
+        timer.set_loop_rate_hz(1000); // 1 kHz control loop
         timer.tic();
-
-        // Timer for control loop timing
-        RUT::Timer loop_timer;
 
         while (true)
         {
+            //print target pose with timestamp
+            double dt = timer.toc_ms();
+            timer.sleep_till_next();
 
-            // Update robot status, franka internally uses robot_state
-            //we cant use getCartesian and getWrenchTool cause we are pooling the robot twice otherwise per loop
-            // instead use helpers to expose robot_state interal variable to get the current pose and wrench
-            robot.getCurrentPose(pose);
-            robot.getCurrentWrench(wrench);
             // print the robot pose
-            //printf("Current pose: %f %f %f %f %f %f %f\n", pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], pose[6]);
+            //printf("Current pose before update: %f %f %f %f %f %f %f\n", pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], pose[6]);
+            
+            //we cant use getCartesian and getWrenchTool cause we are pooling the robot twice otherwise per loop
+            // instea we use getCurrentWrenchTool in this case to just update wrench values with the getCurrentPose call
+            robot.getCurrentPose(pose);
+            robot.getCurrentWrenchTool(wrench);
 
             // updates internal state with current pose and measured wrench
             controller.setRobotStatus(pose, wrench - wrench0);
@@ -133,23 +136,20 @@ int main() {
             // Compute the control output
             controller.step(pose_cmd);
 
-            //print target pose with timestamp
-            double dt = timer.toc_ms();
-            //printf("t = %f, target pose: %f %f %f %f %f %f %f\n", dt, pose_cmd[0], pose_cmd[1],
+            //printf("t = %f, target pose after update: %f %f %f %f %f %f %f\n", dt, pose_cmd[0], pose_cmd[1],
                 //pose_cmd[2], pose_cmd[3], pose_cmd[4], pose_cmd[5], pose_cmd[6]);
 
-            // during first iteration, send the 
+            //during first iteration, send the 
             if (!robot.setCartesian(pose_cmd)) {
-            printf("setCartesian failed\n");
-            break;
+                printf("setCartesian failed\n");
+                break;
             }
 
             //print current wrench
             //printf("t = %f, wrench: %f %f %f %f %f %f\n", dt, wrench[0], wrench[1],
                 //wrench[2], wrench[3], wrench[4], wrench[5]);
 
-
-            if (dt > 50000) {
+            if (dt > 15000) {
                 // End motion
                 robot.finishCurrentMotion();
                 break;

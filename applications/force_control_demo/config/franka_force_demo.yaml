@@ -13,7 +13,13 @@ franka:
   controller_mode: "cartesian_impedance" # "joint_impedance" or "cartesian_impedance" or "external_controller"
   motion_generator_mode: "cartesian_position" # "joint_position" or "joint_velocity" or "cartesian_position" or "cartesian_velocity"
   setJointImpedance: [3000, 3000, 3000, 2500, 2500, 2000, 2000]
-  setCartesianImpedance: [1000, 1000, 1000, 200, 200, 200]
+  setCartesianImpedance: [10, 10, 10, 1, 1, 1]
+  kMaxTranslationalVelocity: 0.25
+  kMaxTranslationalAcceleration: 1.0
+  kMaxTranslationalJerk: 500
+  kMaxRotationalVelocity: 0.25
+  kMaxRotationalAcceleration: 1.0
+  kMaxRotationalJerk: 500
   robot_interface_config:
     zone_safety_mode: "SAFETY_MODE_TRUNCATE"
     incre_safety_mode: "SAFETY_MODE_STOP"
@@ -25,16 +31,13 @@ franka:
 
 admittance_controller:
   dt: 0.001
-  log_to_file: false
-  log_file_path: "/home/mikel/ACP/hardware_interfaces/applications/force_control_demo/src/admittance_controller.log"
-  alert_overrun: true
+  log_to_file: true
+  log_file_path: "/home/robotlab/ACP/hardware_interfaces/applications/force_control_demo/src/admittance_controller.log"
+  alert_overrun: false
   compliance6d:
-    #stiffness: [200, 200, 300, 2, 2, 2]
-    #damping: [10, 10, 10, 0.3, 0.3, 0.3]
-    #inertia: [0.1, 0.1, 0.1, 0.001, 0.001, 0.001]
-    stiffness: [0, 0, 0, 0, 0, 0]
-    damping: [0, 0, 0, 0, 0, 0]
-    inertia: [0.1, 0.1, 0.1, 0.05, 0.05, 0.05]
+    stiffness: [100, 100, 100, 100, 100, 100]
+    damping: [0, 0, 0, 0, 0, 0] # for data collection
+    inertia: [18.7, 18.7, 18.7, 0.15, 0.15, 0.15]
     stiction: [0, 0, 0, 0, 0, 0] #stationary friction model
   max_spring_force_magnitude: 20
   max_spring_torque_magnitude: 2.0
