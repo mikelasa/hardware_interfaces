@@ -6,9 +6,9 @@ include_directories(
   include/
   yaml-cpp
   ${EIGEN3_INCLUDE_DIRS}
-  /home/mikel/ACP/libfranka-0.9.2/src/
-  /home/mikel/ACP/libfranka-0.9.2/include/franka/
-  /home/mikel/ACP/libfranka-0.9.2/common/include/
+  /home/robotlab/ACP/libfranka-0.9.2/src/
+  /home/robotlab/ACP/libfranka-0.9.2/include/franka/
+  /home/robotlab/ACP/libfranka-0.9.2/common/include/
 )
 
 add_executable(ur_demo src/demo_with_ur.cc)

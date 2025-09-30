@@ -1,7 +1,7 @@
 #include <RobotUtilities/spatial_utilities.h>
 #include <RobotUtilities/timer_linux.h>
-#include <force_control/admittance_controller.h>
-#include <force_control/config_deserialize.h>
+#include <force_control_impedance/impedance_controller.h>
+#include <force_control_impedance/config_deserialize_impedance.h>
 #include <unistd.h>
 #include <franka/franka.h>
 #include <yaml-cpp/yaml.h>
@@ -28,7 +28,7 @@ T deserialize_vector(const YAML::Node& node) {
 
 int main() {
     FRANKA::FRANKAConfig robot_config;
-    AdmittanceController::AdmittanceControllerConfig admittance_config;
+    ImpedanceController::ImpedanceControllerConfig impedance_config;
 
     // open file
     const std::string CONFIG_PATH =
@@ -42,17 +42,17 @@ int main() {
         // deserialize robot and controller config
         robot_config.deserialize(config["franka"]);
         // deserialize controller config
-        deserialize(config["admittance_controller"], admittance_config);
+        deserialize(config["impedance_controller"], impedance_config);
     } catch (const std::exception& e) {
         std::cerr << "Failed to load the config file: " << e.what() << std::endl;
         return -1;
     }
 
     FRANKA robot(robot_config);
-    AdmittanceController controller;
+    ImpedanceController controller;
     RUT::Timer timer;
     RUT::TimePoint time0 = timer.tic();
-    RUT::Vector7d pose, pose_ref, pose_cmd = RUT::Vector7d::Zero();
+    RUT::Vector7d pose, pose_ref, torque_cmd = RUT::Vector7d::Zero();
     RUT::Vector6d wrench, wrench0, wrench_WTr;
 
     //set impedance to robot
@@ -70,17 +70,27 @@ int main() {
                         0.0, 0.0, 0.0,
                         0.0, 0.0, 0.0});
 
+    // call robot model
+    franka::Model model(robot.loadModel());
+
     //start motion with the configured modes
     robot.startMotion(
-        research_interface::robot::Move::ControllerMode::kCartesianImpedance,
-        research_interface::robot::Move::MotionGeneratorMode::kCartesianPosition,
+        research_interface::robot::Move::ControllerMode::kExternalController,
+        research_interface::robot::Move::MotionGeneratorMode::kJointVelocity,
         {robot_config.deviation[0], robot_config.deviation[1], robot_config.deviation[2]},
         {robot_config.deviation[0], robot_config.deviation[1], robot_config.deviation[2]}
     );  
 
-
-    // get initial pose
+    // get initial pose, velocity and jacobian
     robot.getCartesian(pose);
+    franka::RobotState state = robot.getRobotState();
+    Eigen::Map<const Eigen::Matrix<double, 7, 1>> dq(state.dq.data());
+    std::array<double, 42> jacobian_array = model.zeroJacobian(franka::Frame::kEndEffector, state);
+    Eigen::Map<const Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
+
+    //set jacobian and velocity to zero at the begining
+    controller.getJacobian(jacobian);
+    controller.getVelocity(dq);
 
     // Average the initial wrench over 2 seconds (200 samples at 1 kHz)
     wrench0.setZero();
@@ -96,7 +106,7 @@ int main() {
     std::cout << "Starting control ..." << std::endl;
 
     // initialize controller
-    controller.init(time0, admittance_config, pose);
+    controller.init(time0, impedance_config, pose);
 
     // transformation and number of force controlled axes
     RUT::Matrix6d Tr = RUT::Matrix6d::Identity();
@@ -127,6 +137,14 @@ int main() {
             robot.getCurrentPose(pose);
             robot.getCurrentWrenchTool(wrench);
 
+            //get jacobian and velocity
+            state = robot.getRobotState();
+            jacobian_array = model.zeroJacobian(franka::Frame::kEndEffector, state);
+
+            // set jacobian and velocity in the controller (direct mapping without intermediate variables)
+            controller.getJacobian(Eigen::Map<const Eigen::Matrix<double, 6, 7>>(jacobian_array.data()));
+            controller.getVelocity(Eigen::Map<const Eigen::Matrix<double, 7, 1>>(state.dq.data()));
+
             // updates internal state with current pose and measured wrench
             controller.setRobotStatus(pose, wrench - wrench0);
 
@@ -134,22 +152,22 @@ int main() {
             controller.setRobotReference(pose_ref, wrench_WTr);
 
             // Compute the control output
-            controller.step(pose_cmd);
+            controller.step(torque_cmd);
 
             //printf("t = %f, target pose after update: %f %f %f %f %f %f %f\n", dt, pose_cmd[0], pose_cmd[1],
                 //pose_cmd[2], pose_cmd[3], pose_cmd[4], pose_cmd[5], pose_cmd[6]);
 
             //during first iteration, send the 
-            if (!robot.setCartesian(pose_cmd)) {
-                printf("setCartesian failed\n");
+            if (!robot.setTorques(torque_cmd)) {
+                printf("setTorques failed\n");
                 break;
             }
 
-            //print current wrench
-            //printf("t = %f, wrench: %f %f %f %f %f %f\n", dt, wrench[0], wrench[1],
-                //wrench[2], wrench[3], wrench[4], wrench[5]);
+            //print torque command
+            //printf("t = %f, torque_cmd: %f %f %f %f %f %f %f\n", dt, torque_cmd[0], torque_cmd[1],
+                //torque_cmd[2], torque_cmd[3], torque_cmd[4], torque_cmd[5], torque_cmd[6]);
 
-            if (dt > 15000) {
+            if (dt > 50000) {
                 // End motion
                 robot.finishCurrentMotion();
                 break;

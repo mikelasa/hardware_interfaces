@@ -37,8 +37,8 @@ class FRANKA : public RobotInterfaces {
             double kDeltaT{1e-3}; // Time step for filtering and rate limiting
             double CutoffFrequency{100}; // Cutoff frequency for low-pass filter
             std::string realtime_config{"enforce"}; // "ignore" or "enforce"
-            std::string controller_mode{"cartesian_impedance"}; // "joint_impedance", "cartesian_impedance", "external_controller"
-            std::string motion_generator_mode{"cartesian_position"}; // "joint_position", "joint_velocity", "cartesian_position", "cartesian_velocity"
+            std::string controller_mode{"external_controller"}; // "joint_impedance", "cartesian_impedance", "external_controller"
+            std::string motion_generator_mode{"joint_velocity"}; // "joint_position", "joint_velocity", "cartesian_position", "cartesian_velocity"
             std::array<double, 7> setJointImpedance{{0, 0, 0, 0, 0, 0, 0}};
             std::array<double, 6> setCartesianImpedance{{0, 0, 0, 0, 0, 0}};
             double kMaxTranslationalVelocity{1.96};
@@ -124,7 +124,7 @@ class FRANKA : public RobotInterfaces {
         bool getCurrentPose(RUT::Vector7d& pose_xyzq);
         bool getCurrentWrenchTool(RUT::Vector6d& wrench);
         franka::Duration getElapsedTime();
-        franka::RobotState getRobotState(franka::RobotState& state);
+        franka::RobotState getRobotState();
 
         /* funciones de robot_impl.h 
         * readOnce lee el estado del robot una vez

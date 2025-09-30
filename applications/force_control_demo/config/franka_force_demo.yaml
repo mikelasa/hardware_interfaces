@@ -8,12 +8,12 @@ franka:
                 0.0, 0.0, 0.1]
   deviation: [10.0, 3.12, 6.283185307179586]
   kDeltaT: 1e-3
-  CutoffFrequency: 50
+  CutoffFrequency: 100
   realtime_config: "ignore" # ignore or enforce
-  controller_mode: "cartesian_impedance" # "joint_impedance" or "cartesian_impedance" or "external_controller"
+  controller_mode: "external_controller" # "joint_impedance" or "cartesian_impedance" or "external_controller"
   motion_generator_mode: "cartesian_position" # "joint_position" or "joint_velocity" or "cartesian_position" or "cartesian_velocity"
   setJointImpedance: [3000, 3000, 3000, 2500, 2500, 2000, 2000]
-  setCartesianImpedance: [10, 10, 10, 1, 1, 1]
+  setCartesianImpedance: [1000, 1000, 1000, 200, 200, 200]
   kMaxTranslationalVelocity: 0.25
   kMaxTranslationalAcceleration: 1.0
   kMaxTranslationalJerk: 500
@@ -29,23 +29,13 @@ franka:
     max_incre_joint_rad: 0.0628
     safe_zone: [-0.5, 0.7, -0.9, -0.2, 0.2, 0.8]
 
-admittance_controller:
+impedance_controller:
   dt: 0.001
   log_to_file: true
-  log_file_path: "/home/robotlab/ACP/hardware_interfaces/applications/force_control_demo/src/admittance_controller.log"
+  log_file_path: "/home/robotlab/ACP/hardware_interfaces/applications/force_control_demo/src/impedance_controller.log"
   alert_overrun: false
   compliance6d:
-    stiffness: [100, 100, 100, 100, 100, 100]
+    stiffness: [1, 1, 1, 0.1, 0.1, 0.1]
     damping: [0, 0, 0, 0, 0, 0] # for data collection
-    inertia: [18.7, 18.7, 18.7, 0.15, 0.15, 0.15]
     stiction: [0, 0, 0, 0, 0, 0] #stationary friction model
-  max_spring_force_magnitude: 20
-  max_spring_torque_magnitude: 2.0
-  direct_force_control_gains:
-    P_trans: 0.0
-    I_trans: 0
-    D_trans: 0
-    P_rot: 0.0
-    I_rot: 0
-    D_rot: 0
-  direct_force_control_I_limit: [0, 0, 0, 0, 0, 0]
+
