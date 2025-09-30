@@ -3,7 +3,7 @@ close all;
 clc;
 
 % ---- Load the file ----
-filename = 'admittance_controller.log'; % change to your file name
+filename = 'impedance_controller.log'; % change to your file name
 data = readmatrix(filename);        % assumes whitespace-separated txt file
 
 % ---- Extract columns ----
