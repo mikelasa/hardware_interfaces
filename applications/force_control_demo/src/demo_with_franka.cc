@@ -90,20 +90,37 @@ int main() {
 
     //set jacobian and velocity to zero at the begining
     controller.getJacobian(jacobian);
-    controller.getVelocity(dq);
+    controller.getRobotState(state);
 
-    // Average the initial wrench over 2 seconds (200 samples at 1 kHz)
-    wrench0.setZero();
-    int avg_samples = 200;
-    for (int i = 0; i < avg_samples; ++i) {
-        RUT::Vector6d w;
-        robot.getCurrentWrenchTool(w);
-        wrench0 += w;
-        usleep(10000); // 10 ms per sample (100 Hz)
-    }
-    wrench0 /= avg_samples;
-    std::cout << "Averaged wrench0: " << wrench0.transpose() << std::endl;
-    std::cout << "Starting control ..." << std::endl;
+    /*
+    // equilibrium point is the initial position
+    Eigen::Affine3d initial_transform(Eigen::Matrix4d::Map(state.O_T_EE.data()));
+    Eigen::Vector3d initial_position(initial_transform.translation());
+    Eigen::Vector3d target_position(0.50, 0.0, 0.50); // desired target
+    double trajectory_duration = 10.0; // seconds
+    Eigen::Vector3d position_d = initial_position;
+    Eigen::Quaterniond orientation_d(initial_transform.rotation());
+
+    // Quintic trajectory generator
+    auto quintic_trajectory = [](const Eigen::Vector3d& p0, const Eigen::Vector3d& pf, double t, double T) {
+        double tau = std::min(std::max(t / T, 0.0), 1.0);
+        double tau2 = tau * tau;
+        double tau3 = tau2 * tau;
+        double tau4 = tau3 * tau;
+        double tau5 = tau4 * tau;
+        double s = 10 * tau3 - 15 * tau4 + 6 * tau5;
+        return p0 + s * (pf - p0);
+    };
+
+    // Precompute trajectory points
+    int traj_steps = static_cast<int>(trajectory_duration * 1000.0); // 1kHz
+    std::vector<Eigen::Vector3d> trajectory(traj_steps);
+    for (int i = 0; i < traj_steps; ++i) {
+        double t = static_cast<double>(i) / 1000.0;
+        trajectory[i] = quintic_trajectory(initial_position, target_position, t, trajectory_duration);
+    }*/
+
+    std::cout << "Starting control loop..." << std::endl;
 
     // initialize controller
     controller.init(time0, impedance_config, pose);
@@ -117,6 +134,9 @@ int main() {
     pose_ref = pose;
     wrench_WTr.setZero();
 
+    // fixed pose for testing
+    RUT::Vector7d test_pose = pose_ref;
+
     try
     {
 
@@ -128,12 +148,10 @@ int main() {
             //print target pose with timestamp
             double dt = timer.toc_ms();
             timer.sleep_till_next();
-
-            // print the robot pose
-            //printf("Current pose before update: %f %f %f %f %f %f %f\n", pose[0], pose[1], pose[2], pose[3], pose[4], pose[5], pose[6]);
             
+            /* UPDATE VALUES*/
             //we cant use getCartesian and getWrenchTool cause we are pooling the robot twice otherwise per loop
-            // instea we use getCurrentWrenchTool in this case to just update wrench values with the getCurrentPose call
+            // insted we use getCurrentWrenchTool in this case to just update wrench values with the getCurrentPose call
             robot.getCurrentPose(pose);
             robot.getCurrentWrenchTool(wrench);
 
@@ -143,19 +161,29 @@ int main() {
 
             // set jacobian and velocity in the controller (direct mapping without intermediate variables)
             controller.getJacobian(Eigen::Map<const Eigen::Matrix<double, 6, 7>>(jacobian_array.data()));
-            controller.getVelocity(Eigen::Map<const Eigen::Matrix<double, 7, 1>>(state.dq.data()));
+            controller.getRobotState(state);
 
             // updates internal state with current pose and measured wrench
-            controller.setRobotStatus(pose, wrench - wrench0);
+            controller.setRobotStatus(pose, wrench);
+
+            /*
+            // update pose reference along the precomputed trajectory
+            static int traj_index = 0;
+            if (traj_index < traj_steps) {
+                Eigen::Vector3d pos_d = trajectory[traj_index++];
+                pose_ref.head(3) = pos_d;
+                // keep orientation constant
+                pose_ref.tail(4) = orientation_d.coeffs();
+            }*/
+
+            //std::cout << "test_pose: " << test_pose.transpose() << std::endl;
+            //std::cout << "Pose: " << pose.transpose() << std::endl;
 
             // Update robot reference
-            controller.setRobotReference(pose_ref, wrench_WTr);
+            controller.setRobotReference(test_pose, wrench_WTr);
 
             // Compute the control output
             controller.step(torque_cmd);
-
-            //printf("t = %f, target pose after update: %f %f %f %f %f %f %f\n", dt, pose_cmd[0], pose_cmd[1],
-                //pose_cmd[2], pose_cmd[3], pose_cmd[4], pose_cmd[5], pose_cmd[6]);
 
             //during first iteration, send the 
             if (!robot.setTorques(torque_cmd)) {
@@ -170,6 +198,7 @@ int main() {
             if (dt > 50000) {
                 // End motion
                 robot.finishCurrentMotion();
+                std::cout << "FIN" << std::endl;
                 break;
             }
 

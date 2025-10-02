@@ -580,6 +580,8 @@ int main() {
 
                 while (!motion_command.motion_generation_finished) {
 
+                    auto t_start = std::chrono::high_resolution_clock::now();
+
                     // Update time
                     period = robot_state.time - previous_time;
                     previous_time = robot_state.time;
@@ -652,8 +654,12 @@ int main() {
                     robot_state = franka_robot.update(&motion_command, &control_command);
                     franka_robot.throwOnMotionError(robot_state, motion_id);
 
+                    auto t_end = std::chrono::high_resolution_clock::now();
+                    double elapsed_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+                    std::cout << "setTorques time: " << elapsed_ms << " ms" << std::endl;
+
                     // Stop after 30 seconds
-                    if (time >= 30.0) {
+                    if (time >= 3600.0) {
                         motion_command.motion_generation_finished = true;
                     }
 

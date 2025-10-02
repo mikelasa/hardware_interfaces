@@ -1,3 +1,4 @@
+%% 
 clear all;
 close all;
 clc;
@@ -7,18 +8,29 @@ filename = 'impedance_controller.log'; % change to your file name
 data = readmatrix(filename);        % assumes whitespace-separated txt file
 
 % ---- Extract columns ----
-t                   = data(:,1);          % timestamp (de cada ciclo)
-pose                = data(:,2:8);        % pose de referencia SE3_WTref
-pose_ref            = data(:,9:15);        % pose actual SE3_WT
-pose_error          = data(:,16:21);       % pose comandada (step) SE3_WT_cmd
-dq                  = data(:,22:28);      % wrench medida wrench_T_fb
-wrench              = data(:,29:34);      % wrench comandada wrench_Tr_All
-tau_task            = data(:,35:41);      % velocidad espacial referrncia v_spatial_WT
-tau_d               = data(:,42:48);      % body velocity referencia  v_body_WT_ref
+t                   = data(:,1);           % timestamp (de cada ciclo)
+pose                = data(:,2:8);         % pose actual (quats)
+pose_ref            = data(:,9:15);        % pose de referencia 
+q                   = data(:,16:22);       % joints posicion
+dq                  = data(:,23:29);       % wrench medida wrench_T_fb
+wrench              = data(:,30:35);       % wrench comandada wrench_Tr_All
+tau_task            = data(:,36:41);       % task torques
+tau_nullspace       = data(:,42:48);       % nullspace torques
+tau_ext             = data(:,42:48);       % external torques
+tau_d               = data(:,42:48);       % desired torques
 
 t_abs = cumsum(t);
+%from quats to axis angle
+% Convert quaternion to axis-angle representation
+pose_axis_angle = zeros(size(pose, 1), 4);
+pose_ref_axis_angle = zeros(size(pose, 1), 4);
 
-% ---- Plot Pose ----
+for i = 1:size(pose, 1)
+    pose_axis_angle(i, :) = quat2axang(pose(i, 4:7));
+    pose_ref_axis_angle(i, :) = quat2axang(pose_ref(i, 4:7));
+end
+
+% ---- Plot Pose positions----
 figure;
 pose_labels = {'X', 'Y', 'Z'};
 for i = 1:3
@@ -28,60 +40,79 @@ for i = 1:3
     plot(t_abs, pose_ref(:,i), 'LineWidth', 1.2)
     xlabel('Time [s]')
     ylabel(['pose [' pose_labels{i} ']'])
-    legend('pose\_ref', 'pose')
+    legend('pose', 'pose\_ref')
     if i==1
         title('Pose')
     end
     grid on
     
 end
+% 
+% % ---- Plot Pose orientations----
+% figure;
+% pose_labels = {'w', 'x', 'y', 'z'};
+% for i = 1:4
+%     subplot(4,1,i)
+%     plot(t_abs, pose(:,i+3), 'LineWidth', 1.2)
+%     hold on
+%     plot(t_abs, pose_ref(:,i+3), 'LineWidth', 1.2)
+%     plot(t_abs, pose_error(:,i+3), 'LineWidth', 1.2)
+%     xlabel('Time [s]')
+%     ylabel(['pose [' pose_labels{i} ']'])
+%     legend('pose', 'pose\_ref', 'pose\_error')
+%     if i==1
+%         title('quat error')
+%     end
+%     grid on
+% 
+% end
 
-% ---- Plot velocity ----
+% ---- Plot Pose orientations axis angle----
 figure;
-velocity_labels = {'dq 1', 'dq 2', 'dq 3', 'dq 4', 'dq 5', 'dq 6'};
-for i = 1:6
-    subplot(6,1,i)
-    plot(t_abs, dq(:,i), 'LineWidth', 1.2)
-    xlabel('Time [s]')
-    ylabel(velocity_labels{i})
-    legend('velocity')
-    if i==1
-        title('joint velocity')
-    end
-    grid on
-    hold off
-end
-
-% ---- Plot Wrench ----
-figure;
-wrench_labels = {'force X','force Y','force Z','torque X','torque Y','torque Z'};
-for i = 1:6
-    subplot(6,1,i)
-    plot(t_abs, wrench(:,i), 'LineWidth', 1.2)
+pose_labels = {'a', 'b', 'c'};
+for i = 1:3
+    subplot(3,1,i)
+    plot(t_abs, pose_axis_angle(:,i), 'LineWidth', 1.2)
     hold on
+    plot(t_abs, pose_ref_axis_angle(:,i), 'LineWidth', 1.2)
     xlabel('Time [s]')
-    ylabel(wrench_labels{i})
-    legend('wrench')
+    ylabel(['pose [' pose_labels{i} ']'])
+    legend('pose', 'pose\_ref')
     if i==1
-        title('Wrench')
+        title('axis angle error')
     end
     grid on
-    hold off
+    
 end
 
-% ---- Plot torques ----
+% ---- Plot wrench----
 figure;
-torques_labels = {'tau 1', 'tau 2', 'tau 3', 'tau 4', 'tau 5', 'tau 6'};
-for i = 1:6
-    subplot(6,1,i)
-    plot(t_abs, tau_task(:,i), 'LineWidth', 1.2)
+wrench_labels = {'Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz'};
+for j = 1:6
+    subplot(6,1,j)
+    plot(t_abs, wrench(:,j), 'LineWidth', 1.2)
     xlabel('Time [s]')
-    ylabel(torques_labels{i})
-    legend('torques')
+    ylabel(['wrench [' wrench_labels{j} ']'])
     if i==1
-        title('task torques')
+        title('Wrench filtered')
     end
     grid on
-    hold off
 end
 
+%---- Plot torques----
+figure;
+torque_labels = {'t1', 't2', 't3', 't4', 't5', 't6'};
+for k = 1:6
+    subplot(6,1,k)
+    plot(t_abs, tau_d(:,k), 'LineWidth', 1.2)
+    hold on
+    plot(t_abs, tau_task(:,k), 'LineWidth', 1.2)
+    plot(t_abs, tau_nullspace(:,k), 'LineWidth', 1.2)
+    plot(t_abs, tau_ext(:,k), 'LineWidth', 1.2)
+    xlabel('Time [s]')
+    ylabel(['Torque [' torque_labels{k} ']'])
+    if k==1
+        title('Torques ')
+    end
+    grid on
+end

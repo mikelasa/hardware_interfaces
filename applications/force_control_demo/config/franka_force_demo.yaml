@@ -35,7 +35,9 @@ impedance_controller:
   log_file_path: "/home/robotlab/ACP/hardware_interfaces/applications/force_control_demo/src/impedance_controller.log"
   alert_overrun: false
   compliance6d:
-    stiffness: [1, 1, 1, 0.1, 0.1, 0.1]
-    damping: [0, 0, 0, 0, 0, 0] # for data collection
+    stiffness: [100, 100, 100, 10, 10, 10]
+    damping: [20, 20, 20, 2, 2, 2] # applying critical damping: D = 2*sqrt(K*m)
+    nullspace_stiffness: [0, 0, 0, 0, 0, 0, 0]
+    nullspace_damping: [0, 0, 0, 0, 0, 0, 0] 
     stiction: [0, 0, 0, 0, 0, 0] #stationary friction model
 

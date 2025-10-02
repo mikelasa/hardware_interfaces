@@ -561,6 +561,7 @@ bool FRANKA::Implementation::setJoints(const RUT::VectorXd& joints) {
 
 
 bool FRANKA::Implementation::setTorques(const RUT::VectorXd& torques) {
+    
 
     if (torques.size() != 7) {
         return false;
@@ -569,10 +570,11 @@ bool FRANKA::Implementation::setTorques(const RUT::VectorXd& torques) {
     try {
         // fill control_command with desired torques and motion command velocity 0
         for (size_t i = 0; i < 7; ++i) {
-            control_command.tau_J_d[i] = torques[i];
+            control_command.tau_J_d[i] = torques(i);
         }
         motion_command.dq_c = {0, 0, 0, 0, 0, 0, 0};
 
+        
         // Apply low-pass filter to the torque command
         for (size_t i = 0; i < 7; ++i) {
             control_command.tau_J_d[i] = franka::lowpassFilter(
@@ -582,7 +584,8 @@ bool FRANKA::Implementation::setTorques(const RUT::VectorXd& torques) {
                 franka::kDefaultCutoffFrequency
             );
         }
-
+        
+        
         //rate limit the torque command
         control_command.tau_J_d = franka::limitRate(
             franka::kMaxTorqueRate,
@@ -593,11 +596,15 @@ bool FRANKA::Implementation::setTorques(const RUT::VectorXd& torques) {
         // Send command and update robot state
         robot_state = update(&motion_command, &control_command);
         throwOnMotionError(robot_state, motion_id);
+
         return true;
-    } catch (...) {
+
+    } catch (const std::exception& e) {
+        std::cerr << "Exception: " << e.what() << std::endl;
         return false;
     }
 }
+
 
 bool FRANKA::Implementation::getWrenchBaseOnTool(RUT::Vector6d& wrench) {
     try {
@@ -633,14 +640,14 @@ bool FRANKA::Implementation::getCurrentPose(RUT::Vector7d& pose_xyzq) {
         const Eigen::Vector3d p = tf.translation();
         const Eigen::Quaterniond q(tf.rotation());  // already normalized
 
-        // IMPORTANT: store as [x, y, z, qx, qy, qz, qw]
+        // IMPORTANT: store as [x, y, z, qw, qx, qy, qz]
         pose_xyzq[0] = p.x();
         pose_xyzq[1] = p.y();
         pose_xyzq[2] = p.z();
-        pose_xyzq[3] = q.x();
-        pose_xyzq[4] = q.y();
-        pose_xyzq[5] = q.z();
-        pose_xyzq[6] = q.w();
+        pose_xyzq[3] = q.w();
+        pose_xyzq[4] = q.x();
+        pose_xyzq[5] = q.y();
+        pose_xyzq[6] = q.z();
 
         return true;
 
@@ -655,7 +662,20 @@ bool FRANKA::Implementation::getCurrentPose(RUT::Vector7d& pose_xyzq) {
 
 bool FRANKA::Implementation::getCurrentWrenchTool(RUT::Vector6d& wrench) {
     try {
+
+        //apply filter to the wrench
+        static RUT::Vector6d filtered_wrench = RUT::Vector6d::Zero();
         wrench = Eigen::Map<const RUT::Vector6d>(robot_state.K_F_ext_hat_K.data());
+
+        for (size_t i = 0; i < 6; ++i) {
+        filtered_wrench[i] = franka::lowpassFilter(config.kDeltaT,
+                                        filtered_wrench[i],
+                                        robot_state.K_F_ext_hat_K[i],
+                                        franka::kDefaultCutoffFrequency);
+        }
+        
+        filtered_wrench = Eigen::Map<const RUT::Vector6d>(robot_state.K_F_ext_hat_K.data());
+
         return true;
     } catch (const std::exception& e) {
         std::cerr << "[Franka getCurrentWrench] std::exception: " << e.what() << std::endl;
