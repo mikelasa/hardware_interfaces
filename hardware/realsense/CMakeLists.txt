@@ -1,4 +1,4 @@
-find_package(realsense2 REQUIRED )
+find_package(realsense2 REQUIRED)
 find_package(OpenCV REQUIRED)
 
 include_directories(
@@ -9,6 +9,13 @@ include_directories(
 add_library(REALSENSE SHARED src/realsense.cpp)
 target_include_directories(REALSENSE PUBLIC include/ /usr/include/librealsense2/)
 target_link_libraries(REALSENSE ${RUT} ${realsense2_LIBRARY} ${OpenCV_LIBS} ${YAMLLib}
+)
+
+add_executable(TESTREAL src/test_realsense.cpp)
+target_link_libraries(TESTREAL 
+    REALSENSE
+    ${OpenCV_LIBS}
+    ${realsense2_LIBRARY}
 )
 
 install(DIRECTORY include/
