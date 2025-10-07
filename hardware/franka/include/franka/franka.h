@@ -95,8 +95,19 @@ class FRANKA : public RobotInterfaces {
             }
         };
 
-        FRANKA(const FRANKAConfig& config);
-        virtual ~FRANKA();
+        FRANKA();
+        ~FRANKA();
+
+        /**
+         * Initialize socket communication. Create a thread to run the 500Hz
+         * communication with URe.
+         *
+         * @param[in]  time0    Start time. Time will count from this number.
+         * @param[in]  config   controller configs.
+         *
+         * @return     True if success.
+         */
+        bool init(RUT::TimePoint time0, const FRANKAConfig& config);
 
         /*
             *get Cartesian pose of the robot tool. Distances are in mm.

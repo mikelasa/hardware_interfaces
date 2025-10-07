@@ -33,7 +33,12 @@ int main() {
         config.deviation[2]
     };
 
-    FRANKA franka_robot(config);
+    // Instantiate Franka robot interface
+    FRANKA franka_robot;
+    RUT::Timer timer;
+    // Initialize the robot with the configuration
+    franka_robot.init(timer.tic(), config);
+
     research_interface::robot::MotionGeneratorCommand motion_command{};
     research_interface::robot::ControllerCommand control_command{};
     
@@ -59,7 +64,7 @@ int main() {
             // Test 1: Get Robot State
             //instancia la clase FRANKA con la configuracion
             try {
-                FRANKA franka_robot(config);
+
                 //get states readOnce
                 franka::RobotState state = franka_robot.readOnce();
                 std::cout << "Robot state read successfully." << std::endl;
@@ -73,7 +78,6 @@ int main() {
         case 2:
             // Test 2: get robot state trough update
             try {
-                FRANKA franka_robot(config);
                 //get states readOnce
                 franka::RobotState state = franka_robot.update(nullptr, nullptr);
                 std::cout << "Robot state updated successfully." << std::endl;

@@ -5,6 +5,7 @@ project(table_top_manip)
 find_package(Eigen3 REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(realsense2 REQUIRED )
+find_package(Franka REQUIRED)
 find_package(Boost REQUIRED COMPONENTS
   system
   thread
@@ -20,6 +21,10 @@ include_directories(
   include/
   yaml-cpp
   ${EIGEN3_INCLUDE_DIRS}
+  ${CMAKE_INSTALL_PREFIX}/include/
+  /home/robotlab/ACP/libfranka-0.9.2/src/
+  /home/robotlab/ACP/libfranka-0.9.2/include/franka/
+  /home/robotlab/ACP/libfranka-0.9.2/common/include/
 )
 
 add_library(ManipServer SHARED src/manip_server.cc src/manip_server_loops.cc)
@@ -33,6 +38,8 @@ target_link_libraries(ManipServer
   WSG_GRIPPER
   COIN_FT
   HI_COMMON
+  FRANKA
+  Franka::Franka
   ${RUT}
   ${FORCE_CONTROLLERS}
   ${realsense2_LIBRARY}

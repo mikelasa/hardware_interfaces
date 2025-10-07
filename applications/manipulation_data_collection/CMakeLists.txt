@@ -9,6 +9,9 @@ include_directories(
   yaml-cpp
   ${Boost_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
+  /home/robotlab/ACP/libfranka-0.9.2/src/
+  /home/robotlab/ACP/libfranka-0.9.2/include/franka/
+  /home/robotlab/ACP/libfranka-0.9.2/common/include/
 )
 
 add_executable(manipulation_data_collection src/main.cc)
@@ -17,4 +20,6 @@ target_link_libraries(manipulation_data_collection
   ${RUT}
   ${YAMLLib}
   ${OpenCV_LIBS}
+  -lPocoNet
+  -lPocoFoundation
 )

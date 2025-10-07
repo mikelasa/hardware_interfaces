@@ -19,7 +19,6 @@ target_include_directories(FRANKA PUBLIC
 # test
 add_executable(test_cases src/test_cases.cpp)
 add_executable(test_franka src/test_franka.cpp)
-add_executable(test_joints_franka src/test_joints_franka.cpp)
 
 target_link_libraries(
   test_cases FRANKA
@@ -32,15 +31,6 @@ target_link_libraries(
 
 target_link_libraries(
   test_franka FRANKA
-  ${RUT}
-  ${TIMER_LIB}
-  Franka::Franka
-  -lPocoNet
-  -lPocoFoundation
-  )
-
-target_link_libraries(
-  test_joints_franka FRANKA
   ${RUT}
   ${TIMER_LIB}
   Franka::Franka

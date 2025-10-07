@@ -22,8 +22,8 @@ class Realsense : public CameraInterfaces {
   struct RealsenseConfig {
     // Not all sizes and frame rates are supported by the camera.
     // Use realsense viewer to check what is supported.
-    int width{1920};
-    int height{1080};
+    int width{1280};
+    int height{720};
     int framerate{30};
     bool enable_color{true};
     bool enable_depth{true};
@@ -46,6 +46,13 @@ class Realsense : public CameraInterfaces {
     }
   };
 
+  // for returning both rgb and depth frames from the same frameset
+  struct FramePair {
+      cv::Mat rgb;
+      cv::Mat depth;
+      bool valid;
+  };
+
   Realsense();
   ~Realsense();
 
@@ -59,11 +66,29 @@ class Realsense : public CameraInterfaces {
    * @return     True if success.
    */
   bool init(RUT::TimePoint time0, const RealsenseConfig& config);
+
+  /**
+   * Gets the next RGB image frame from the camera. This function blocks until
+   * a new frame is available. frame is converted to cv::Mat before return.
+   */
   cv::Mat next_rgb_frame_blocking() override;
+
+  /**
+   * Gets the next depth image frame from the camera. This function blocks until
+   * a new frame is available. frame is converted to cv::Mat before return.
+   */
+  cv::Mat next_depth_frame_blocking();
+
+  /**
+   * Gets the next depth image and RGB frame from the camera. This function blocks until
+   * a new frame is available. frame is converted to cv::Mat before return.
+   */
+  FramePair next_pair_frame_blocking();
 
  private:
   struct Implementation;
   std::unique_ptr<Implementation> m_impl;
+  
 };
 
 #endif

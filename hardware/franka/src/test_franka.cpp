@@ -4,6 +4,7 @@
 #include "franka/model.h"
 #include <chrono>
 #include <fstream> 
+#include <RobotUtilities/timer_linux.h>
 
 
 using namespace std::chrono;
@@ -65,7 +66,10 @@ int main() {
     config.robot_interface_config.safe_zone = {0.3, 0.65, -0.3, 0.4, 0.1, 0.4};
     
     // Instantiate Franka robot interface
-    FRANKA franka_robot(config);
+    FRANKA franka_robot;
+    RUT::Timer timer;
+    // Initialize the robot with the configuration
+    franka_robot.init(timer.tic(), config);
 
     //set impedance to robot
     franka_robot.setJointImpedance(config.setJointImpedance);
@@ -85,7 +89,8 @@ int main() {
         research_interface::robot::Move::MotionGeneratorMode::kCartesianPosition,
         {config.deviation[0], config.deviation[1], config.deviation[2]},
         {config.deviation[0], config.deviation[1], config.deviation[2]}
-    );  
+    );
+    
 
     // Get the initial Cartesian pose of the robot
     RUT::Vector7d pose0;
@@ -96,9 +101,6 @@ int main() {
 
     //get wrench at the tool
     RUT::Vector6d wrench;
-
-    // Timer for control loop timing
-    RUT::Timer timer;
 
     // Send pose0 directly, do not modify or reconstruct
     for (int i = 0; i < 30; ++i) {

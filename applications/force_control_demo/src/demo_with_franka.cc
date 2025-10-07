@@ -48,13 +48,15 @@ int main() {
         return -1;
     }
 
-    FRANKA robot(robot_config);
+    FRANKA robot;
     ImpedanceController controller;
     RUT::Timer timer;
     RUT::TimePoint time0 = timer.tic();
     RUT::Vector7d pose, pose_ref, torque_cmd = RUT::Vector7d::Zero();
     RUT::Vector6d wrench, wrench0, wrench_WTr;
 
+    // Initialize the robot with the configuration
+    robot.init(time0, robot_config);
     //set impedance to robot
     robot.setJointImpedance(robot_config.setJointImpedance);
     robot.setCartesianImpedance(robot_config.setCartesianImpedance);

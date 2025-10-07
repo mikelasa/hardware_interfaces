@@ -33,13 +33,13 @@ int main() {
   // read config files, loads:
       - main params: is bimanual, data folder...
       - config for what threads to run and parameters
-      - hardware config (roobot, camera...)
+      - hardware config (robot, camera...)
       -  controller config
   */
   const std::string config_path =
-      "/path/to/hardware_interfaces/workcell/"
+      "/home/robotlab/ACP/hardware_interfaces/workcell/"
       "table_top_manip/"
-      "config/single_arm_data_collection.yaml";
+      "config/single_arm_data_collection_franka.yaml";
 
 
   // create the server, this server handles all the data collection pipeline, communication with hardware, etc...

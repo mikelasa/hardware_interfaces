@@ -30,65 +30,11 @@ struct FRANKA::Implementation {
     research_interface::robot::ControllerCommand control_command{};
 
     //constructor que recibe la configuracion del robot
-    Implementation(const FRANKA::FRANKAConfig& config) 
-    {
+    Implementation();
+    ~Implementation();
 
-        std::cout << "ip: " << config.robot_ip << std::endl;
-        //crea un objeto Network con la ip del robot y el tamaño del log
-        //instancia la implementacion del robot
-        std::unique_ptr<franka::Network> network;
-        try {
-            std::cout << "Attempting to create Network..." << std::endl;
-
-            network = std::make_unique<franka::Network>(
-                config.robot_ip,
-                research_interface::robot::kCommandPort);
-
-            std::cout << "Network created successfully!" << std::endl;
-
-            } catch (const std::exception& e) {
-            std::cerr << "[ERROR] Exception while creating Network: " << e.what() << std::endl;
-            return;
-            }
-        
-        // Set realtime configuration
-        franka::RealtimeConfig rt_config = franka::RealtimeConfig::kIgnore;
-        if (config.realtime_config == "ignore") {
-            rt_config = franka::RealtimeConfig::kIgnore;
-        } else if (config.realtime_config == "enforce") {
-            rt_config = franka::RealtimeConfig::kEnforce;
-        } 
-
-        // set controller mode and motion generator mode
-        research_interface::robot::Move::ControllerMode cm_config = research_interface::robot::Move::ControllerMode::kExternalController;
-        research_interface::robot::Move::MotionGeneratorMode mg_config = research_interface::robot::Move::MotionGeneratorMode::kJointPosition;
-        if (config.controller_mode == "joint_impedance") {
-            cm_config = research_interface::robot::Move::ControllerMode::kJointImpedance;
-        } else if (config.controller_mode == "cartesian_impedance") {
-            cm_config = research_interface::robot::Move::ControllerMode::kCartesianImpedance;
-        } else if (config.controller_mode == "external_controller") {
-            cm_config = research_interface::robot::Move::ControllerMode::kExternalController;
-        }
-        if (config.motion_generator_mode == "joint_position") {
-            mg_config = research_interface::robot::Move::MotionGeneratorMode::kJointPosition;
-        } else if (config.motion_generator_mode == "joint_velocity") {
-            mg_config = research_interface::robot::Move::MotionGeneratorMode::kJointVelocity;
-        } else if (config.motion_generator_mode == "cartesian_position") {
-            mg_config = research_interface::robot::Move::MotionGeneratorMode::kCartesianPosition;
-        } else if (config.motion_generator_mode == "cartesian_velocity") {
-            mg_config = research_interface::robot::Move::MotionGeneratorMode::kCartesianVelocity;
-        }
-
-        // Create Robot::Impl using your Network
-        robot_impl = std::make_unique<franka::Robot::Impl>(
-            std::move(network),
-            config.log_size,
-            rt_config);
-            this->config = config;   
-    }
-    
-    // Destructor que libera los recursos de la implementacion del robot
-    ~Implementation() {}
+    // init
+    bool initialize(RUT::TimePoint time0, const FRANKA::FRANKAConfig& franka_config);
 
     // helpers para exponer el estado interno robot_state y obtener pose y wrench actuales sin usar readOnce()
     bool getCurrentPose(RUT::Vector7d& pose_xyzq);
@@ -148,14 +94,81 @@ struct FRANKA::Implementation {
     
 };
 
-// Constructor que inicializa la implementacion del robot con la configuracion del struct FRANKAConfig
-FRANKA::FRANKA(const FRANKAConfig& config){
-    std::cout << "inside FRANKA constructor" << std::endl;
-    impl_ = std::make_unique<Implementation>(config);
+FRANKA::Implementation::Implementation() {
+    // Constructor implementation (if needed)
 }
+
+FRANKA::Implementation::~Implementation() {
+    // Destructor implementation (if needed)
+}
+
+bool FRANKA::Implementation::initialize(RUT::TimePoint time0, const FRANKA::FRANKAConfig& config) {
+
+    std::cout << "ip: " << config.robot_ip << std::endl;
+    //crea un objeto Network con la ip del robot y el tamaño del log
+    //instancia la implementacion del robot
+    std::unique_ptr<franka::Network> network;
+    try {
+        std::cout << "Attempting to create Network..." << std::endl;
+
+        network = std::make_unique<franka::Network>(
+            config.robot_ip,
+            research_interface::robot::kCommandPort);
+
+        std::cout << "Network created successfully!" << std::endl;
+
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] Exception while creating Network: " << e.what() << std::endl;
+        return false;
+    }
+    
+    // Set realtime configuration
+    franka::RealtimeConfig rt_config = franka::RealtimeConfig::kIgnore;
+    if (config.realtime_config == "ignore") {
+        rt_config = franka::RealtimeConfig::kIgnore;
+    } else if (config.realtime_config == "enforce") {
+        rt_config = franka::RealtimeConfig::kEnforce;
+    } 
+
+    // set controller mode and motion generator mode
+    research_interface::robot::Move::ControllerMode cm_config = research_interface::robot::Move::ControllerMode::kExternalController;
+    research_interface::robot::Move::MotionGeneratorMode mg_config = research_interface::robot::Move::MotionGeneratorMode::kJointPosition;
+    if (config.controller_mode == "joint_impedance") {
+        cm_config = research_interface::robot::Move::ControllerMode::kJointImpedance;
+    } else if (config.controller_mode == "cartesian_impedance") {
+        cm_config = research_interface::robot::Move::ControllerMode::kCartesianImpedance;
+    } else if (config.controller_mode == "external_controller") {
+        cm_config = research_interface::robot::Move::ControllerMode::kExternalController;
+    }
+    if (config.motion_generator_mode == "joint_position") {
+        mg_config = research_interface::robot::Move::MotionGeneratorMode::kJointPosition;
+    } else if (config.motion_generator_mode == "joint_velocity") {
+        mg_config = research_interface::robot::Move::MotionGeneratorMode::kJointVelocity;
+    } else if (config.motion_generator_mode == "cartesian_position") {
+        mg_config = research_interface::robot::Move::MotionGeneratorMode::kCartesianPosition;
+    } else if (config.motion_generator_mode == "cartesian_velocity") {
+        mg_config = research_interface::robot::Move::MotionGeneratorMode::kCartesianVelocity;
+    }
+
+    // Create Robot::Impl using your Network
+    robot_impl = std::make_unique<franka::Robot::Impl>(
+        std::move(network),
+        config.log_size,
+        rt_config);
+        this->config = config;  
+
+    return true;
+}
+
+// Constructor que inicializa la implementacion del robot con la configuracion del struct FRANKAConfig
+FRANKA::FRANKA() : impl_(std::make_unique<Implementation>()) {}
 FRANKA::~FRANKA() {}
 
 //funciones de llamada a impl de la clase FRANKA
+bool FRANKA::init(RUT::TimePoint time0, const FRANKAConfig& config) {
+    return impl_->initialize(time0, config);
+}
+
 bool FRANKA::getCartesian(RUT::Vector7d& pose_xyzq) {
     return impl_->getCartesian(pose_xyzq);
 }
