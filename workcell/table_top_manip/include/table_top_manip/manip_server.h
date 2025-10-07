@@ -15,8 +15,10 @@
 #include <RobotUtilities/spatial_utilities.h>
 #include <RobotUtilities/timer_linux.h>
 
-#include <force_control/admittance_controller.h>
-#include <force_control/config_deserialize.h>
+#include <force_control_impedance/admittance_controller.h>
+#include <force_control_impedance/config_deserialize.h>
+#include <force_control_impedance/impedance_controller.h>
+#include <force_control_impedance/config_deserialize_impedance.h>
 #include <hardware_interfaces/js_interfaces.h>
 #include <hardware_interfaces/robot_interfaces.h>
 #include <hardware_interfaces/types.h>
@@ -27,6 +29,7 @@
 #include <realsense/realsense.h>
 #include <robotiq_ft_modbus/robotiq_ft_modbus.h>
 #include <ur_rtde/ur_rtde.h>
+#include <franka/franka.h>
 #include <wsg_gripper/wsg_gripper.h>
 
 #include <RobotUtilities/data_buffer.h>
@@ -44,8 +47,10 @@ struct ManipServerConfig {
   int wrench_buffer_size{100};
   bool mock_hardware{false};
   bool bimanual{false};
+  RobotSelection robot_selection{RobotSelection::FRANKA};
   CameraSelection camera_selection{CameraSelection::NONE};
   ForceSensingMode force_sensing_mode{ForceSensingMode::NONE};
+  ControllerSelection controller_selection{ControllerSelection::IMPEDANCE_CONTROLLER};
   RUT::Matrix6d low_damping{};
   std::vector<int> output_rgb_hw{};
 
@@ -63,10 +68,14 @@ struct ManipServerConfig {
       wrench_buffer_size = node["wrench_buffer_size"].as<int>();
       mock_hardware = node["mock_hardware"].as<bool>();
       bimanual = node["bimanual"].as<bool>();
+      robot_selection = string_to_enum<RobotSelection>(
+          node["robot_selection"].as<std::string>());
       camera_selection = string_to_enum<CameraSelection>(
           node["camera_selection"].as<std::string>());
       force_sensing_mode = string_to_enum<ForceSensingMode>(
           node["force_sensing_mode"].as<std::string>());
+      controller_selection = string_to_enum<ControllerSelection>(
+          node["controller_selection"].as<std::string>());
 
       low_damping = RUT::deserialize_vector<RUT::Vector6d>(node["low_damping"])
                         .asDiagonal();
@@ -230,7 +239,8 @@ class ManipServer {
   std::vector<std::shared_ptr<JSInterfaces>> eoat_ptrs;
 
   // controllers
-  std::vector<AdmittanceController> _controllers;
+  std::vector<AdmittanceController> _admittance_controllers;
+  std::vector<ImpedanceController> _impedance_controllers;
   std::deque<std::mutex> _controller_mtxs;
 
   // threads

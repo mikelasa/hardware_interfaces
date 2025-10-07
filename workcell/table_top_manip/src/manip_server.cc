@@ -44,23 +44,43 @@ bool ManipServer::initialize(const std::string& config_path) {
   if (!_config.mock_hardware) {
     for (int id : _id_list) {
       // Robot
-      // load the robot config
-      URRTDE::URRTDEConfig robot_config;
-      try {
-        robot_config.deserialize(config["ur_rtde" + std::to_string(id)]);
-      } catch (const std::exception& e) {
-        std::cerr << "Failed to load the robot config file: " << e.what()
-                  << std::endl;
-        return false;
-      }
-      //robot_ptrs is a vector of RobotInterface pointers, for each robot in id_list append a new URRTDE instance
-      robot_ptrs.emplace_back(new URRTDE);
-      // initialize robot, static_cast 
-      URRTDE* urrtde_ptr = static_cast<URRTDE*>(robot_ptrs[id].get());
-      // call init on the robot (CUIDADO AQUI)
-      if (!urrtde_ptr->init(time0, robot_config)) {
-        std::cerr << "Failed to initialize UR RTDE for id " << id
-                  << ". Exiting." << std::endl;
+      if (_config.robot_selection == RobotSelection::UR_RTDE) {
+        // UR Robot initialization
+        URRTDE::URRTDEConfig robot_config;
+        try {
+          robot_config.deserialize(config["ur_rtde" + std::to_string(id)]);
+        } catch (const std::exception& e) {
+          std::cerr << "Failed to load the UR robot config file: " << e.what()
+                    << std::endl;
+          return false;
+        }
+        robot_ptrs.emplace_back(new URRTDE);
+        URRTDE* urrtde_ptr = static_cast<URRTDE*>(robot_ptrs[id].get());
+        if (!urrtde_ptr->init(time0, robot_config)) {
+          std::cerr << "Failed to initialize UR RTDE for id " << id
+                    << ". Exiting." << std::endl;
+          return false;
+        }
+      } else if (_config.robot_selection == RobotSelection::FRANKA) {
+        // Franka Robot initialization
+        FRANKA::FRANKAConfig robot_config;
+        try {
+          robot_config.deserialize(config["franka" + std::to_string(id)]);
+          std::cout << "ip: " << robot_config.robot_ip << std::endl;
+        } catch (const std::exception& e) {
+          std::cerr << "Failed to load the Franka robot config file: " << e.what()
+                    << std::endl;
+          return false;
+        }
+        robot_ptrs.emplace_back(new FRANKA);
+        FRANKA* franka_ptr = static_cast<FRANKA*>(robot_ptrs[id].get());
+        if (!franka_ptr->init(time0, robot_config)) {
+          std::cerr << "Failed to initialize Franka for id " << id
+                    << ". Exiting." << std::endl;
+          return false;
+        }
+      } else {
+        std::cerr << "Unsupported robot type. Exiting." << std::endl;
         return false;
       }
 
@@ -183,6 +203,9 @@ bool ManipServer::initialize(const std::string& config_path) {
           return false;
         }
         wrench_publish_rate.push_back(coinft_config.publish_rate);
+      } else if (_config.force_sensing_mode == ForceSensingMode::JOINT_SENSORS) {
+        //uses robot's internal joint torque sensors, so no config needed
+        std::cout << "[Force sensor]Using joint torque sensors for force sensing." << std::endl;
       } else {
         std::cerr << "Invalid force sensing mode. Exiting." << std::endl;
         return false;
@@ -197,7 +220,9 @@ bool ManipServer::initialize(const std::string& config_path) {
 
   // initialize Admittance controller, for each arm in id_list
   for (int id : _id_list) {
-    // create a new instance of the AdmittanceController
+    if (_config.controller_selection != ControllerSelection::ADMITTANCE_CONTROLLER) 
+    {
+      // create a new instance of the AdmittanceController
     AdmittanceController::AdmittanceControllerConfig admittance_config;
     try {
       deserialize(config["admittance_controller" + std::to_string(id)],
@@ -209,7 +234,7 @@ bool ManipServer::initialize(const std::string& config_path) {
     }
 
     // same as hardware, for each controller in id_list appends a new AdmittanceController and mutex
-    _controllers.emplace_back();
+    _admittance_controllers.emplace_back();
     // mutex for controller, to thread safety
     _controller_mtxs.emplace_back();
 
@@ -219,25 +244,70 @@ bool ManipServer::initialize(const std::string& config_path) {
     if (!_config.mock_hardware) {
       robot_ptrs[id]->getCartesian(pose);
     }
-    if (!_controllers[id].init(time0, admittance_config, pose)) {
+    if (!_admittance_controllers[id].init(time0, admittance_config, pose)) {
       std::cerr << "Failed to initialize admittance controller for id " << id
                 << ". Exiting." << std::endl;
       return false;
     }
 
     // set the force controlled axis, use all dofs for compliance
-
     RUT::Matrix6d Tr = RUT::Matrix6d::Identity();
     // The robot should not behave with any compliance during initialization.
     // The user needs to set the desired compliance afterwards.
     int n_af = 0;
-    _controllers[id].setForceControlledAxis(Tr, n_af);
+    _admittance_controllers[id].setForceControlledAxis(Tr, n_af);
 
     //values for stiffness and damping taken from config
     _stiffnesses_high.push_back(admittance_config.compliance6d.stiffness);
     _stiffnesses_low.push_back(RUT::Matrix6d::Zero());
     _dampings_high.push_back(admittance_config.compliance6d.damping);
     _dampings_low.push_back(_config.low_damping);
+    }
+    else if (_config.controller_selection == ControllerSelection::IMPEDANCE_CONTROLLER) 
+    {
+      // create a new instance of the ImpedanceController
+      ImpedanceController::ImpedanceControllerConfig impedance_config;
+      try {
+        deserialize(config["impedance_controller" + std::to_string(id)],
+                    impedance_config);
+      } catch (const std::exception& e) {
+        std::cerr << "Failed to load the impedance controller config file: "
+                  << e.what() << std::endl;
+        return false;
+      }
+
+      // same as hardware, for each controller in id_list appends a new ImpedanceController and mutex
+    _impedance_controllers.emplace_back();
+    // mutex for controller, to thread safety
+    _controller_mtxs.emplace_back();
+
+    // gets the current pose of robot to use as initial pose
+    //then initializes the controller with time, config parameters and pose
+    RUT::Vector7d pose = RUT::Vector7d::Zero();
+    if (!_config.mock_hardware) {
+      robot_ptrs[id]->getCartesian(pose);
+    }
+    if (!_impedance_controllers[id].init(time0, impedance_config, pose)) {
+      std::cerr << "Failed to initialize impedance controller for id " << id
+                << ". Exiting." << std::endl;
+      return false;
+    }
+
+    // set the force controlled axis, use all dofs for compliance
+    RUT::Matrix6d Tr = RUT::Matrix6d::Identity();
+    // The robot should not behave with any compliance during initialization.
+    // The user needs to set the desired compliance afterwards.
+    int n_af = 0;
+    _impedance_controllers[id].setForceControlledAxis(Tr, n_af);
+
+    //values for stiffness and damping taken from config
+    _stiffnesses_high.push_back(impedance_config.compliance6d.stiffness);
+    _stiffnesses_low.push_back(RUT::Matrix6d::Zero());
+    _dampings_high.push_back(impedance_config.compliance6d.damping);
+    _dampings_low.push_back(_config.low_damping);
+      
+    }
+  
   }
 
   // create the data buffers
@@ -614,8 +684,13 @@ void ManipServer::set_high_level_maintain_position() {
   for (int id : _id_list) {
     std::lock_guard<std::mutex> lock(_controller_mtxs[id]);
     // set the robot to have high stiffness, but still compliant
-    _controllers[id].setStiffnessMatrix(_stiffnesses_high[id]);
-    _controllers[id].setDampingMatrix(_dampings_high[id]);
+    if (_config.controller_selection == ControllerSelection::ADMITTANCE_CONTROLLER) {
+      _admittance_controllers[id].setStiffnessMatrix(_stiffnesses_high[id]);
+      _admittance_controllers[id].setDampingMatrix(_dampings_high[id]);
+    } else if (_config.controller_selection == ControllerSelection::IMPEDANCE_CONTROLLER) {
+      _impedance_controllers[id].setStiffnessMatrix(_stiffnesses_high[id]);
+      _impedance_controllers[id].setDampingMatrix(_dampings_high[id]);
+    }
   }
 }
 
@@ -626,8 +701,13 @@ void ManipServer::set_high_level_free_jogging() {
   for (int id : _id_list) {
     std::lock_guard<std::mutex> lock(_controller_mtxs[id]);
     // set the robot to be compliant
-    _controllers[id].setStiffnessMatrix(_stiffnesses_low[id]);
-    _controllers[id].setDampingMatrix(_dampings_low[id]);
+    if (_config.controller_selection == ControllerSelection::ADMITTANCE_CONTROLLER) {
+      _admittance_controllers[id].setStiffnessMatrix(_stiffnesses_low[id]);
+      _admittance_controllers[id].setDampingMatrix(_dampings_low[id]);
+    } else if (_config.controller_selection == ControllerSelection::IMPEDANCE_CONTROLLER) {
+      _impedance_controllers[id].setStiffnessMatrix(_stiffnesses_low[id]);
+      _impedance_controllers[id].setDampingMatrix(_dampings_low[id]);
+    }
   }
 }
 
@@ -642,13 +722,21 @@ void ManipServer::set_target_pose(const Eigen::Ref<RUT::Vector7d> pose,
 void ManipServer::set_force_controlled_axis(const RUT::Matrix6d& Tr, int n_af,
                                             int robot_id) {
   std::lock_guard<std::mutex> lock(_controller_mtxs[robot_id]);
-  _controllers[robot_id].setForceControlledAxis(Tr, n_af);
+  if (_config.controller_selection == ControllerSelection::ADMITTANCE_CONTROLLER) {
+    _admittance_controllers[robot_id].setForceControlledAxis(Tr, n_af);
+  } else if (_config.controller_selection == ControllerSelection::IMPEDANCE_CONTROLLER) {
+    _impedance_controllers[robot_id].setForceControlledAxis(Tr, n_af);
+  }
 }
 
 void ManipServer::set_stiffness_matrix(const RUT::Matrix6d& stiffness,
                                        int robot_id) {
   std::lock_guard<std::mutex> lock(_controller_mtxs[robot_id]);
-  _controllers[robot_id].setStiffnessMatrix(stiffness);
+  if (_config.controller_selection == ControllerSelection::ADMITTANCE_CONTROLLER) {
+    _admittance_controllers[robot_id].setStiffnessMatrix(stiffness);
+  } else if (_config.controller_selection == ControllerSelection::IMPEDANCE_CONTROLLER) {
+    _impedance_controllers[robot_id].setStiffnessMatrix(stiffness);
+  }
 }
 
 void ManipServer::clear_cmd_buffer() {

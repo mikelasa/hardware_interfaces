@@ -29,10 +29,15 @@ enum class ForceSensingMode {
   NONE,
   FORCE_MODE_ATI,
   FORCE_MODE_ROBOTIQ,
-  FORCE_MODE_COINFT
+  FORCE_MODE_COINFT,
+  JOINT_SENSORS
 };
 
 enum class CameraSelection { NONE, GOPRO, REALSENSE };
+
+enum class RobotSelection {UR_RTDE, FRANKA };
+
+enum class ControllerSelection {IMPEDANCE_CONTROLLER, ADMITTANCE_CONTROLLER };
 
 enum class RandomType {
   NONE,

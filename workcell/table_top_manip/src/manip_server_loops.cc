@@ -185,18 +185,18 @@ void ManipServer::robot_loop(const RUT::TimePoint& time0, int id) {
       std::lock_guard<std::mutex> lock(_controller_mtxs[id]);
       loop_profiler.stop("controller_lock");
       loop_profiler.start();
-      _controllers[id].setRobotStatus(pose_fb, wrench_fb_ur);
+      _admittance_controllers[id].setRobotStatus(pose_fb, wrench_fb_ur);
       // Update robot reference
-      _controllers[id].setRobotReference(force_control_ref_pose, wrench_WTr);
+      _admittance_controllers[id].setRobotReference(force_control_ref_pose, wrench_WTr);
 
       // Update stiffness matrix
       if (new_stiffness_found) {
-        _controllers[id].setStiffnessMatrix(stiffness);
+        _admittance_controllers[id].setStiffnessMatrix(stiffness);
       }
       loop_profiler.stop("controller_set");
       loop_profiler.start();
       // Compute the control output
-      _controllers[id].step(pose_rdte_cmd);
+      _admittance_controllers[id].step(pose_rdte_cmd);
       loop_profiler.stop("controller_step");
       loop_profiler.start();
     }

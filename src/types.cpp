@@ -20,7 +20,8 @@ const std::vector<ForceSensingMode>& all_force_sensing_modes() {
   static const std::vector<ForceSensingMode> modes = {
       ForceSensingMode::NONE, ForceSensingMode::FORCE_MODE_ATI,
       ForceSensingMode::FORCE_MODE_ROBOTIQ,
-      ForceSensingMode::FORCE_MODE_COINFT};
+      ForceSensingMode::FORCE_MODE_COINFT,
+      ForceSensingMode::JOINT_SENSORS};
   return modes;
 }
 
@@ -28,6 +29,19 @@ const std::vector<CameraSelection>& all_camera_selections() {
   static const std::vector<CameraSelection> modes = {
       CameraSelection::NONE, CameraSelection::GOPRO,
       CameraSelection::REALSENSE};
+  return modes;
+}
+
+const std::vector<RobotSelection>& all_robot_selections() {
+  static const std::vector<RobotSelection> modes = {
+      RobotSelection::UR_RTDE, RobotSelection::FRANKA};
+  return modes;
+}
+
+const std::vector<ControllerSelection>& all_controller_selections() {
+  static const std::vector<ControllerSelection> modes = {
+      ControllerSelection::IMPEDANCE_CONTROLLER,
+      ControllerSelection::ADMITTANCE_CONTROLLER};
   return modes;
 }
 
@@ -79,6 +93,8 @@ const char* to_string(const ForceSensingMode e) {
       return "FORCE_MODE_ROBOTIQ";
     case ForceSensingMode::FORCE_MODE_COINFT:
       return "FORCE_MODE_COINFT";
+    case ForceSensingMode::JOINT_SENSORS:
+      return "JOINT_SENSORS";
     default:
       return "INVALID_FORCE_SENSING_MODE";
   }
@@ -95,6 +111,30 @@ const char* to_string(const CameraSelection e) {
       return "REALSENSE";
     default:
       return "INVALID_CAMERA_SELECTION";
+  }
+}
+
+template <>
+const char* to_string(const RobotSelection e) {
+  switch (e) {
+    case RobotSelection::UR_RTDE:
+      return "UR_RTDE";
+    case RobotSelection::FRANKA:
+      return "FRANKA";
+    default:
+      return "INVALID_ROBOT_SELECTION";
+  }
+}
+
+template <>
+const char* to_string(const ControllerSelection e) {
+  switch (e) {
+    case ControllerSelection::IMPEDANCE_CONTROLLER:
+      return "IMPEDANCE_CONTROLLER";
+    case ControllerSelection::ADMITTANCE_CONTROLLER:
+      return "ADMITTANCE_CONTROLLER";
+    default:
+      return "INVALID_CONTROLLER_SELECTION";
   }
 }
 
@@ -156,6 +196,28 @@ CameraSelection string_to_enum(const std::string& string) {
   }
 
   return CameraSelection::NONE;
+}
+
+template <>
+RobotSelection string_to_enum(const std::string& string) {
+  for (const auto& e : all_robot_selections()) {
+    if (string == to_string(e)) {
+      return e;
+    }
+  }
+
+  return RobotSelection::FRANKA;
+}
+
+template <>
+ControllerSelection string_to_enum(const std::string& string) {
+  for (const auto& e : all_controller_selections()) {
+    if (string == to_string(e)) {
+      return e;
+    }
+  }
+
+  return ControllerSelection::IMPEDANCE_CONTROLLER;
 }
 
 template <>
