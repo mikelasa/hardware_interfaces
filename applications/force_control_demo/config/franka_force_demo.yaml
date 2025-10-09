@@ -11,7 +11,7 @@ franka:
   CutoffFrequency: 100
   realtime_config: "ignore" # ignore or enforce
   controller_mode: "external_controller" # "joint_impedance" or "cartesian_impedance" or "external_controller"
-  motion_generator_mode: "cartesian_position" # "joint_position" or "joint_velocity" or "cartesian_position" or "cartesian_velocity"
+  motion_generator_mode: "joint_velocity" # "joint_position" or "joint_velocity" or "cartesian_position" or "cartesian_velocity"
   setJointImpedance: [3000, 3000, 3000, 2500, 2500, 2000, 2000]
   setCartesianImpedance: [1000, 1000, 1000, 200, 200, 200]
   kMaxTranslationalVelocity: 0.25
@@ -31,7 +31,7 @@ franka:
 
 impedance_controller:
   dt: 0.001
-  log_to_file: true
+  log_to_file: false
   log_file_path: "/home/robotlab/ACP/hardware_interfaces/applications/force_control_demo/src/impedance_controller.log"
   alert_overrun: false
   compliance6d:

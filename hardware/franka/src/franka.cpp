@@ -5,44 +5,44 @@
 #include <Eigen/Dense>
 #include "lowpass_filter.h"
 #include "rate_limiting.h"
-
 #include "robot_impl.h"
 #include "network.h"
 
+/**
+ * Helper function to check if all values in an array are finite
+ * @param array Array to check for finite values
+ * @throws std::invalid_argument if any value is infinite or NaN
+ */
 template <typename T, size_t N>
 inline void checkFinite(const std::array<T, N>& array) {
-  if (!std::all_of(array.begin(), array.end(), [](double d) { return std::isfinite(d); })) {
-    throw std::invalid_argument("Commanding value is infinite or NaN.");
-  }
+    if (!std::all_of(array.begin(), array.end(), [](double d) { return std::isfinite(d); })) {
+        throw std::invalid_argument("Commanding value is infinite or NaN.");
+    }
 }
-  
+
+/**
+ * Private implementation structure for FRANKA robot control
+ * Contains all internal state and robot interface components
+ */
 struct FRANKA::Implementation {
-    //puntero a la implementacion de la clase Robot
-    std::unique_ptr<franka::Robot::Impl> robot_impl;
-    //id del motion
-    uint32_t motion_id{0};
-    // Último estado del robot
-    franka::RobotState robot_state;
-    //configuracion del robot desde yaml
-    FRANKA::FRANKAConfig config{};
-    // command objects
+    // Core robot components
+    std::unique_ptr<franka::Robot::Impl> robot_impl;        // Pointer to robot implementation
+    uint32_t motion_id{0};                                  // Current motion session ID
+    franka::RobotState robot_state;                         // Last robot state
+    FRANKA::FRANKAConfig config{};                         // Robot configuration from YAML
+
+    // Command objects for robot communication
     research_interface::robot::MotionGeneratorCommand motion_command{};
     research_interface::robot::ControllerCommand control_command{};
 
-    //constructor que recibe la configuracion del robot
+    // Constructor and destructor
     Implementation();
     ~Implementation();
 
-    // init
+    // ========== Initialization ==========
     bool initialize(RUT::TimePoint time0, const FRANKA::FRANKAConfig& franka_config);
 
-    // helpers para exponer el estado interno robot_state y obtener pose y wrench actuales sin usar readOnce()
-    bool getCurrentPose(RUT::Vector7d& pose_xyzq);
-    bool getCurrentWrenchTool(RUT::Vector6d& wrench);
-    franka::Duration getElapsedTime();
-    franka::RobotState getRobotState();
-
-    // metodos para obtener estado del robot
+    // ========== State Getters (with readOnce) ==========
     bool getCartesian(RUT::Vector7d& pose_xyzq);
     bool getJoints(RUT::VectorXd& joints);
     bool getTorques(RUT::VectorXd& torques);
@@ -50,30 +50,36 @@ struct FRANKA::Implementation {
     bool getWrenchTool(RUT::Vector6d& wrench);
     bool getCartesianVelocity(RUT::Vector6d& velocity);
 
-    // metodos para setear estado del robot
+    // ========== State Setters ==========
     bool setCartesian(const RUT::Vector7d& pose_xyzq);
     bool setJoints(const RUT::VectorXd& joints);
     bool setTorques(const RUT::VectorXd& torques);
 
+    // ========== Helper Methods (without readOnce) ==========
+    bool getCurrentPose(RUT::Vector7d& pose_xyzq);
+    bool getCurrentWrenchTool(RUT::Vector6d& wrench);
+    franka::Duration getElapsedTime();
+    franka::RobotState getRobotState();
 
-    //metodos de robot_impl.h
+    // ========== Low-Level Robot Interface ==========
     franka::RobotState readOnce();
     franka::RobotState update(const research_interface::robot::MotionGeneratorCommand* motion_command,
                               const research_interface::robot::ControllerCommand* control_command);
     franka::RealtimeConfig realtimeConfig() const noexcept;
+
+    // ========== Motion Control ==========
     uint32_t startMotion(research_interface::robot::Move::ControllerMode controller_mode,
                          research_interface::robot::Move::MotionGeneratorMode motion_generator_mode,
                          const research_interface::robot::Move::Deviation& maximum_path_deviation,
                          const research_interface::robot::Move::Deviation& maximum_goal_pose_deviation);
-    void finishMotion( uint32_t motion_id,
+    void finishMotion(uint32_t motion_id,
                       const research_interface::robot::MotionGeneratorCommand* motion_command,
                       const research_interface::robot::ControllerCommand* control_command);
     void cancelMotion(uint32_t motion_id);
-
     void throwOnMotionError(const franka::RobotState& robot_state, uint32_t motion_id);
+    void finishCurrentMotion();
 
-
-    //funciones para setear impedancia en el robot (falta setCollisionBehavior)
+    // ========== Robot Configuration ==========
     void setJointImpedance(const std::array<double, 7>& K_theta);
     void setCartesianImpedance(const std::array<double, 6>& K_x);
     void setCollisionBehavior(const std::array<double, 7>& lower_torque_thresholds_acceleration,
@@ -85,15 +91,14 @@ struct FRANKA::Implementation {
                             const std::array<double, 6>& lower_force_thresholds_nominal,
                             const std::array<double, 6>& upper_force_thresholds_nominal);
     void setLoad(double load_mass,
-               const std::array<double, 3>& F_x_Cload,  // NOLINT(readability-identifier-naming)
+               const std::array<double, 3>& F_x_Cload,
                const std::array<double, 9>& load_inertia);
 
-    //funcion para cargar el modelo del robot
+    // ========== Robot Model ==========
     franka::Model loadModel();
-
-    void finishCurrentMotion();
-    
 };
+
+// ========== Implementation Constructor/Destructor ==========
 
 FRANKA::Implementation::Implementation() {
     // Constructor implementation (if needed)
@@ -103,27 +108,25 @@ FRANKA::Implementation::~Implementation() {
     // Destructor implementation (if needed)
 }
 
-bool FRANKA::Implementation::initialize(RUT::TimePoint time0, const FRANKA::FRANKAConfig& config) {
+// ========== Implementation Initialization ==========
 
-    std::cout << "ip: " << config.robot_ip << std::endl;
-    //crea un objeto Network con la ip del robot y el tamaño del log
-    //instancia la implementacion del robot
+bool FRANKA::Implementation::initialize(RUT::TimePoint time0, const FRANKA::FRANKAConfig& config) {
+    std::cout << "Robot IP: " << config.robot_ip << std::endl;
+
+    // Create network connection to robot
     std::unique_ptr<franka::Network> network;
     try {
-        std::cout << "Attempting to create Network..." << std::endl;
-
+        std::cout << "Attempting to create Network connection..." << std::endl;
         network = std::make_unique<franka::Network>(
             config.robot_ip,
             research_interface::robot::kCommandPort);
-
-        std::cout << "Network created successfully!" << std::endl;
-
+        std::cout << "Network connection established successfully!" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "[ERROR] Exception while creating Network: " << e.what() << std::endl;
         return false;
     }
     
-    // Set realtime configuration
+    // Configure realtime settings
     franka::RealtimeConfig rt_config = franka::RealtimeConfig::kIgnore;
     if (config.realtime_config == "ignore") {
         rt_config = franka::RealtimeConfig::kIgnore;
@@ -131,9 +134,8 @@ bool FRANKA::Implementation::initialize(RUT::TimePoint time0, const FRANKA::FRAN
         rt_config = franka::RealtimeConfig::kEnforce;
     } 
 
-    // set controller mode and motion generator mode
+    // Configure controller mode
     research_interface::robot::Move::ControllerMode cm_config = research_interface::robot::Move::ControllerMode::kExternalController;
-    research_interface::robot::Move::MotionGeneratorMode mg_config = research_interface::robot::Move::MotionGeneratorMode::kJointPosition;
     if (config.controller_mode == "joint_impedance") {
         cm_config = research_interface::robot::Move::ControllerMode::kJointImpedance;
     } else if (config.controller_mode == "cartesian_impedance") {
@@ -141,6 +143,9 @@ bool FRANKA::Implementation::initialize(RUT::TimePoint time0, const FRANKA::FRAN
     } else if (config.controller_mode == "external_controller") {
         cm_config = research_interface::robot::Move::ControllerMode::kExternalController;
     }
+
+    // Configure motion generator mode
+    research_interface::robot::Move::MotionGeneratorMode mg_config = research_interface::robot::Move::MotionGeneratorMode::kJointPosition;
     if (config.motion_generator_mode == "joint_position") {
         mg_config = research_interface::robot::Move::MotionGeneratorMode::kJointPosition;
     } else if (config.motion_generator_mode == "joint_velocity") {
@@ -151,7 +156,7 @@ bool FRANKA::Implementation::initialize(RUT::TimePoint time0, const FRANKA::FRAN
         mg_config = research_interface::robot::Move::MotionGeneratorMode::kCartesianVelocity;
     }
 
-    // Create Robot::Impl using your Network
+    // Create Robot implementation using network
     robot_impl = std::make_unique<franka::Robot::Impl>(
         std::move(network),
         config.log_size,
@@ -159,10 +164,12 @@ bool FRANKA::Implementation::initialize(RUT::TimePoint time0, const FRANKA::FRAN
     this->config = config;
 
     try {
+        // Configure robot parameters
         setJointImpedance(this->config.setJointImpedance);
         setCartesianImpedance(this->config.setCartesianImpedance);
         setLoad(this->config.tcp_mass, this->config.fx_c_load, this->config.tcp_inertia);
 
+        // Set collision detection thresholds
         const std::array<double, 7> lower_torque_thresholds_acceleration{{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}};
         const std::array<double, 7> upper_torque_thresholds_acceleration{{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}};
         const std::array<double, 7> lower_torque_thresholds_nominal{{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}};
@@ -181,23 +188,23 @@ bool FRANKA::Implementation::initialize(RUT::TimePoint time0, const FRANKA::FRAN
                              lower_force_thresholds_nominal,
                              upper_force_thresholds_nominal);
 
+        // Read initial robot state
         robot_state = readOnce();
 
+        // Load robot model and compute initial jacobian
         franka::Model model(loadModel());
         const std::array<double, 42> initial_jacobian =
             model.zeroJacobian(franka::Frame::kEndEffector, robot_state);
-        (void)initial_jacobian;
+        (void)initial_jacobian; // Suppress unused variable warning
 
+        // Set path deviation limits
         const research_interface::robot::Move::Deviation deviation_limit{
             this->config.deviation[0],
             this->config.deviation[1],
             this->config.deviation[2]};
 
-        const uint32_t motion_id =
-            startMotion(research_interface::robot::Move::ControllerMode::kExternalController,
-                        research_interface::robot::Move::MotionGeneratorMode::kJointVelocity,
-                        deviation_limit,
-                        deviation_limit);
+        // Start initial motion session
+        const uint32_t motion_id = startMotion(cm_config, mg_config, deviation_limit, deviation_limit);
         if (motion_id == 0) {
             std::cerr << "[ERROR] Failed to start Franka motion session." << std::endl;
             return false;
@@ -210,11 +217,13 @@ bool FRANKA::Implementation::initialize(RUT::TimePoint time0, const FRANKA::FRAN
     return true;
 }
 
-// Constructor que inicializa la implementacion del robot con la configuracion del struct FRANKAConfig
+// ========== FRANKA Class Implementation ==========
+
 FRANKA::FRANKA() : impl_(std::make_unique<Implementation>()) {}
 FRANKA::~FRANKA() {}
 
-//funciones de llamada a impl de la clase FRANKA
+// ========== Public Interface Implementation ==========
+
 bool FRANKA::init(RUT::TimePoint time0, const FRANKAConfig& config) {
     return impl_->initialize(time0, config);
 }
@@ -222,21 +231,27 @@ bool FRANKA::init(RUT::TimePoint time0, const FRANKAConfig& config) {
 bool FRANKA::getCartesian(RUT::Vector7d& pose_xyzq) {
     return impl_->getCartesian(pose_xyzq);
 }
+
 bool FRANKA::setCartesian(const RUT::Vector7d& pose_xyzq) {
     return impl_->setCartesian(pose_xyzq);
 }   
+
 bool FRANKA::getJoints(RUT::VectorXd& joints) {
     return impl_->getJoints(joints);
 }
+
 bool FRANKA::setJoints(const RUT::VectorXd& joints) {
     return impl_->setJoints(joints);
 }
+
 bool FRANKA::getTorques(RUT::VectorXd& torques) {
     return impl_->getTorques(torques);
 }
+
 bool FRANKA::setTorques(const RUT::VectorXd& torques) {
     return impl_->setTorques(torques);
 }
+
 bool FRANKA::getCartesianVelocity(RUT::Vector6d& velocity) {
     return impl_->getCartesianVelocity(velocity);
 }
@@ -244,10 +259,12 @@ bool FRANKA::getCartesianVelocity(RUT::Vector6d& velocity) {
 franka::RobotState FRANKA::readOnce() {
     return impl_->readOnce();
 }
+
 franka::RobotState FRANKA::update(const research_interface::robot::MotionGeneratorCommand* motion_command,
                                    const research_interface::robot::ControllerCommand* control_command) {
     return impl_->update(motion_command, control_command);
 }
+
 uint32_t FRANKA::startMotion(
     research_interface::robot::Move::ControllerMode controller_mode,
     research_interface::robot::Move::MotionGeneratorMode motion_generator_mode,
@@ -255,23 +272,26 @@ uint32_t FRANKA::startMotion(
     const research_interface::robot::Move::Deviation& maximum_goal_pose_deviation) {
     return impl_->startMotion(controller_mode, motion_generator_mode, maximum_path_deviation, maximum_goal_pose_deviation);
 }
+
 void FRANKA::finishMotion(
     uint32_t motion_id,
     const research_interface::robot::MotionGeneratorCommand* motion_command,
     const research_interface::robot::ControllerCommand* control_command) {  
-
-    // Implement the finish motion logic here
     impl_->finishMotion(motion_id, motion_command, control_command);
 }
+
 void FRANKA::cancelMotion(uint32_t motion_id) {
     impl_->cancelMotion(motion_id);
 }
+
 void FRANKA::setJointImpedance(const std::array<double, 7>& K_theta) {
     impl_->setJointImpedance(K_theta);
 }
+
 void FRANKA::setCartesianImpedance(const std::array<double, 6>& K_x) {
     impl_->setCartesianImpedance(K_x);
 }
+
 void FRANKA::throwOnMotionError(const franka::RobotState& robot_state, uint32_t motion_id) {
     impl_->throwOnMotionError(robot_state, motion_id);
 }
@@ -295,11 +315,13 @@ void FRANKA::setCollisionBehavior(
                                 lower_force_thresholds_nominal,
                                 upper_force_thresholds_nominal);
 }
+
 void FRANKA::setLoad(double load_mass,
-               const std::array<double, 3>& F_x_Cload,  // NOLINT(readability-identifier-naming)
+               const std::array<double, 3>& F_x_Cload,
                const std::array<double, 9>& load_inertia) {
     impl_->setLoad(load_mass, F_x_Cload, load_inertia);
 }
+
 franka::Model FRANKA::loadModel() {
     return impl_->loadModel();
 }
@@ -322,7 +344,6 @@ bool FRANKA::getCurrentPose(RUT::Vector7d& pose_xyzq) {
 
 bool FRANKA::getCurrentWrenchTool(RUT::Vector6d& wrench) {
     return impl_->getCurrentWrenchTool(wrench);
-    
 }
 
 franka::Duration FRANKA::getElapsedTime() {
@@ -330,19 +351,20 @@ franka::Duration FRANKA::getElapsedTime() {
 }
 
 franka::RobotState FRANKA::getRobotState() {
-
     return impl_->getRobotState();
 }
 
+// ========== Low-Level Robot Interface Implementation ==========
 
-//funciones de llamada a los metodos de robot_impl.h
 franka::RobotState FRANKA::Implementation::readOnce() {
     return robot_impl->readOnce();
 }
+
 franka::RobotState FRANKA::Implementation::update(const research_interface::robot::MotionGeneratorCommand* motion_command,
                                                   const research_interface::robot::ControllerCommand* control_command) {
     return robot_impl->update(motion_command, control_command);
 }
+
 franka::RealtimeConfig FRANKA::Implementation::realtimeConfig() const noexcept {
     return robot_impl->realtimeConfig();
 }
@@ -354,7 +376,7 @@ uint32_t FRANKA::Implementation::startMotion(
     const research_interface::robot::Move::Deviation& maximum_goal_pose_deviation) {
     
     try {
-        // Reset cached commands for the new motion session
+        // Reset cached commands for new motion session
         motion_command = research_interface::robot::MotionGeneratorCommand{};
         control_command = research_interface::robot::ControllerCommand{};
         motion_command.motion_generation_finished = false;
@@ -369,19 +391,19 @@ uint32_t FRANKA::Implementation::startMotion(
         return 0; // Indicate failure
     }
 }
+
 void FRANKA::Implementation::finishMotion(
     uint32_t motion_id,
     const research_interface::robot::MotionGeneratorCommand* motion_command,
-    const research_interface::robot::ControllerCommand* control_command) 
-    {
+    const research_interface::robot::ControllerCommand* control_command) {
     try {
         std::cout << "Finishing motion with ID: " << motion_id << std::endl;
         robot_impl->finishMotion(motion_id, motion_command, control_command);
-
     } catch (const std::exception& e) {
         std::cerr << "Error while finishing motion: " << e.what() << std::endl;
     }
 }
+
 void FRANKA::Implementation::cancelMotion(uint32_t motion_id) {
     try {
         robot_impl->cancelMotion(motion_id);
@@ -424,9 +446,8 @@ void FRANKA::Implementation::setCollisionBehavior(
 }
 
 void FRANKA::Implementation::setLoad(double load_mass,
-               const std::array<double, 3>& F_x_Cload,  // NOLINT(readability-identifier-naming)
+               const std::array<double, 3>& F_x_Cload,
                const std::array<double, 9>& load_inertia) {
-    // Create the request and execute the command
     robot_impl->executeCommand<research_interface::robot::SetLoad>(
         load_mass, F_x_Cload, load_inertia);
 }
@@ -436,81 +457,73 @@ franka::Model FRANKA::Implementation::loadModel() {
 }
 
 void FRANKA::Implementation::finishCurrentMotion() {
-
-    //check if control_command is empty
+    // Check if control command is empty (position/velocity control mode)
     if(control_command.tau_J_d.empty()) {
-
         // Set flag to indicate motion is finished
         motion_command.motion_generation_finished = true;
-        // Fill motion_command with 0 to avoid issues
+        // Fill motion command with current state to avoid issues
         motion_command.O_T_EE_c = robot_state.O_T_EE_c;
         motion_command.O_dP_EE_c = robot_state.O_dP_EE_c;
 
         // Send final update to robot with finished flag
         robot_state = update(&motion_command, nullptr);
         throwOnMotionError(robot_state, motion_id);
-        
     }
-    else 
-    {
-        //fill motion_command joint velocity with 0 to avoid issues
+    else {
+        // Fill motion command joint velocity with 0 to stop motion
         motion_command.dq_c = {0, 0, 0, 0, 0, 0, 0};
         motion_command.motion_generation_finished = true;
 
-        // controll comand with the last commanded torques
+        // Control command with the last commanded torques
         control_command.tau_J_d = robot_state.tau_J_d;
 
         // Send final update to robot with finished flag
         robot_state = update(&motion_command, &control_command);
         throwOnMotionError(robot_state, motion_id);
-        
     }
-    
 
-    // Now call finishMotion with current motion_id and motion_command, no control_command
+    // Finish motion with current motion_id and commands
     finishMotion(motion_id, &motion_command, &control_command);
     std::cout << "Motion session finished." << std::endl;
-
 }
 
-// IMPLEMENTACION DE FUNCIONES
+// ========== State Getter Implementations ==========
+
 bool FRANKA::Implementation::getJoints(RUT::VectorXd& joints) {
     try {
         robot_state = readOnce();
-        // pass state.q 
+        // Map robot state joint positions to Eigen vector
         joints = Eigen::Map<const Eigen::VectorXd>(robot_state.q.data(), 7);
         return true;
     } catch (const franka::Exception& e) {
-    std::cerr << "[Franka getJoints] libfranka error: " << e.what() << std::endl;
-    return false;
+        std::cerr << "[Franka getJoints] libfranka error: " << e.what() << std::endl;
+        return false;
     }
 }
 
 bool FRANKA::Implementation::getCartesian(RUT::Vector7d& pose_xyzq) {
-  try {
+    try {
+        // Read current robot state
+        robot_state = readOnce();
+        RUT::Matrix4d M;
 
-    //via RUT SE32pose
-    robot_state = readOnce();
-    RUT::Matrix4d M;
+        // Convert from std::array<double,16> column-major to Eigen::Matrix4d
+        std::copy(robot_state.O_T_EE.begin(), robot_state.O_T_EE.end(), M.data());
 
-    //convert from std::array<double,16> column-major to Eigen::Matrix4d
-    std::copy(robot_state.O_T_EE.begin(), robot_state.O_T_EE.end(), M.data());
+        // Convert from Eigen::Matrix4d to RUT::Vector7d pose
+        RUT::SE32Pose(M, pose_xyzq);
 
-    //convert from Eigen::Matrix4d to RUT::Vector7d pose
-    RUT::SE32Pose(M, pose_xyzq);
-
-    return true;
-
-  } catch (const franka::Exception& e) {
-    std::cerr << "[Franka getCartesian] libfranka error: " << e.what() << std::endl;
-    return false;
-  } catch (const std::exception& e) {
-    std::cerr << "[Franka getCartesian] std::exception: " << e.what() << std::endl;
-    return false;
-  } catch (...) {
-    std::cerr << "[Franka getCartesian] unknown exception\n";
-    return false;
-  }
+        return true;
+    } catch (const franka::Exception& e) {
+        std::cerr << "[Franka getCartesian] libfranka error: " << e.what() << std::endl;
+        return false;
+    } catch (const std::exception& e) {
+        std::cerr << "[Franka getCartesian] std::exception: " << e.what() << std::endl;
+        return false;
+    } catch (...) {
+        std::cerr << "[Franka getCartesian] unknown exception\n";
+        return false;
+    }
 }
 
 bool FRANKA::Implementation::getTorques(RUT::VectorXd& torques) {
@@ -523,11 +536,42 @@ bool FRANKA::Implementation::getTorques(RUT::VectorXd& torques) {
     }
 }
 
-bool FRANKA::Implementation::setCartesian(const RUT::Vector7d& pose) {
-  try {
+bool FRANKA::Implementation::getWrenchBaseOnTool(RUT::Vector6d& wrench) {
+    try {
+        robot_state = readOnce();
+        wrench = Eigen::Map<const RUT::Vector6d>(robot_state.O_F_ext_hat_K.data());
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 
-        
-        // Manually build transformation matrix from pose
+bool FRANKA::Implementation::getWrenchTool(RUT::Vector6d& wrench) {
+    try {
+        robot_state = readOnce();
+        wrench = Eigen::Map<const RUT::Vector6d>(robot_state.K_F_ext_hat_K.data());
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool FRANKA::Implementation::getCartesianVelocity(RUT::Vector6d& velocity) {
+    try {
+        // Read from cached state without calling readOnce() to avoid latency
+        const auto& robot_state = this->robot_state;
+        velocity = Eigen::Map<const RUT::Vector6d>(robot_state.O_dP_EE_c.data());
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+// ========== State Setter Implementations ==========
+
+bool FRANKA::Implementation::setCartesian(const RUT::Vector7d& pose) {
+    try {
+        // Build transformation matrix from pose
         RUT::Vector3d position(pose[0], pose[1], pose[2]);
         RUT::Quaterniond quat(pose[3], pose[4], pose[5], pose[6]); // (w, x, y, z)
         RUT::Matrix3d rotation = quat.toRotationMatrix();
@@ -536,11 +580,11 @@ bool FRANKA::Implementation::setCartesian(const RUT::Vector7d& pose) {
         M.block<3,3>(0,0) = rotation;
         M.block<3,1>(0,3) = position;
 
-        // convert from Eigen::Matrix4d to std::array<double,16> column-major
+        // Convert from Eigen::Matrix4d to std::array<double,16> column-major
         std::array<double, 16> O_T_EE_c{};
         std::copy(M.data(), M.data() + 16, O_T_EE_c.begin());
 
-        // Filtering and rate limiting
+        // Apply filtering and rate limiting
         O_T_EE_c = franka::cartesianLowpassFilter(
             config.kDeltaT,
             O_T_EE_c,
@@ -571,7 +615,6 @@ bool FRANKA::Implementation::setCartesian(const RUT::Vector7d& pose) {
         std::cerr << "Motion error: " << e.what() << std::endl;
         return false;
     }
-
 }
 
 bool FRANKA::Implementation::setJoints(const RUT::VectorXd& joints) {
@@ -581,22 +624,20 @@ bool FRANKA::Implementation::setJoints(const RUT::VectorXd& joints) {
 
     try {
         motion_command.motion_generation_finished = false;
-        motion_command.valid_elbow = false;  // or true if you populate elbow_c
+        motion_command.valid_elbow = false;
 
         std::array<double, 7> q_c{};
         std::copy(joints.data(), joints.data() + 7, q_c.begin());
 
-        //std::cout << "before qc: " << Eigen::Map<const RUT::VectorXd>(q_c.data(), 7).transpose() << std::endl;
-        //print robot state
-        //std::cout << "robot_state.q_d: " << Eigen::Map<const RUT::VectorXd>(robot_state.q_d.data(), 7).transpose() << std::endl;
+        // Apply low-pass filtering
         for (size_t i = 0; i < 7; ++i) {
-        q_c[i] = franka::lowpassFilter(config.kDeltaT,
-                                        q_c[i],
-                                        robot_state.q_d[i],
-                                        franka::kDefaultCutoffFrequency);
+            q_c[i] = franka::lowpassFilter(config.kDeltaT,
+                                            q_c[i],
+                                            robot_state.q_d[i],
+                                            franka::kDefaultCutoffFrequency);
         }
         
-        //std::cout << "after qc: " << Eigen::Map<const RUT::VectorXd>(q_c.data(), 7).transpose() << std::endl;
+        // Apply rate limiting
         q_c = franka::limitRate(franka::kMaxJointVelocity,
                                 franka::kMaxJointAcceleration,
                                 franka::kMaxJointJerk,
@@ -605,8 +646,7 @@ bool FRANKA::Implementation::setJoints(const RUT::VectorXd& joints) {
                                 robot_state.dq_d,
                                 robot_state.ddq_d);
 
-        //std::cout << "after rate limiting: " << Eigen::Map<const RUT::VectorXd>(q_c.data(), 7).transpose() << std::endl;
-
+        // Set motion command
         std::copy(q_c.begin(), q_c.end(), motion_command.q_c.begin());
         std::fill(motion_command.dq_c.begin(), motion_command.dq_c.end(), 0.0);
 
@@ -625,9 +665,8 @@ bool FRANKA::Implementation::setJoints(const RUT::VectorXd& joints) {
     }
 }
 
-
 bool FRANKA::Implementation::setTorques(const RUT::VectorXd& torques) {
-    // 1. Move size check out or make it debug-only
+    // Check size only in debug mode for performance
     #ifdef DEBUG
     if (torques.size() != 7) {
         return false;
@@ -635,14 +674,13 @@ bool FRANKA::Implementation::setTorques(const RUT::VectorXd& torques) {
     #endif
 
     try {
-        // 2. Direct memory copy instead of loop
+        // Direct memory copy for performance
         std::memcpy(control_command.tau_J_d.data(), torques.data(), 7 * sizeof(double));
 
-        // 3. Zero velocity only once during initialization, not every cycle
-        motion_command.dq_c = {0, 0, 0, 0, 0, 0, 0}; // Move to init
+        // Zero velocity commands
+        motion_command.dq_c = {0, 0, 0, 0, 0, 0, 0};
         
-        // 4. Vectorized operations (if possible with your Franka library)
-        // Or unroll the filter loop for better performance
+        // Apply low-pass filtering (unrolled for performance)
         control_command.tau_J_d[0] = franka::lowpassFilter(config.kDeltaT, control_command.tau_J_d[0], robot_state.tau_J_d[0], franka::kDefaultCutoffFrequency);
         control_command.tau_J_d[1] = franka::lowpassFilter(config.kDeltaT, control_command.tau_J_d[1], robot_state.tau_J_d[1], franka::kDefaultCutoffFrequency);
         control_command.tau_J_d[2] = franka::lowpassFilter(config.kDeltaT, control_command.tau_J_d[2], robot_state.tau_J_d[2], franka::kDefaultCutoffFrequency);
@@ -651,15 +689,14 @@ bool FRANKA::Implementation::setTorques(const RUT::VectorXd& torques) {
         control_command.tau_J_d[5] = franka::lowpassFilter(config.kDeltaT, control_command.tau_J_d[5], robot_state.tau_J_d[5], franka::kDefaultCutoffFrequency);
         control_command.tau_J_d[6] = franka::lowpassFilter(config.kDeltaT, control_command.tau_J_d[6], robot_state.tau_J_d[6], franka::kDefaultCutoffFrequency);
         
-        
-        // 5. Rate limiting (this might be the most expensive part)
+        // Apply rate limiting
         control_command.tau_J_d = franka::limitRate(
             franka::kMaxTorqueRate,
             control_command.tau_J_d,
             robot_state.tau_J_d
         );
         
-        // 6. Update robot state (this is likely the most expensive call)
+        // Update robot state
         robot_state = update(&motion_command, &control_command);
         throwOnMotionError(robot_state, motion_id);
 
@@ -671,26 +708,7 @@ bool FRANKA::Implementation::setTorques(const RUT::VectorXd& torques) {
     }
 }
 
-
-bool FRANKA::Implementation::getWrenchBaseOnTool(RUT::Vector6d& wrench) {
-    try {
-        robot_state = readOnce();
-        wrench = Eigen::Map<const RUT::Vector6d>(robot_state.O_F_ext_hat_K.data());
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
-bool FRANKA::Implementation::getWrenchTool(RUT::Vector6d& wrench) {
-    try {
-        robot_state = readOnce();
-        wrench = Eigen::Map<const RUT::Vector6d>(robot_state.K_F_ext_hat_K.data());
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
+// ========== Helper Method Implementations ==========
 
 bool FRANKA::Implementation::getCurrentPose(RUT::Vector7d& pose_xyzq) {
     try {
@@ -706,7 +724,7 @@ bool FRANKA::Implementation::getCurrentPose(RUT::Vector7d& pose_xyzq) {
         const Eigen::Vector3d p = tf.translation();
         const Eigen::Quaterniond q(tf.rotation());  // already normalized
 
-        // IMPORTANT: store as [x, y, z, qw, qx, qy, qz]
+        // Store as [x, y, z, qw, qx, qy, qz]
         pose_xyzq[0] = p.x();
         pose_xyzq[1] = p.y();
         pose_xyzq[2] = p.z();
@@ -728,16 +746,15 @@ bool FRANKA::Implementation::getCurrentPose(RUT::Vector7d& pose_xyzq) {
 
 bool FRANKA::Implementation::getCurrentWrenchTool(RUT::Vector6d& wrench) {
     try {
-
-        //apply filter to the wrench
+        // Apply filtering to the wrench
         static RUT::Vector6d filtered_wrench = RUT::Vector6d::Zero();
         wrench = Eigen::Map<const RUT::Vector6d>(robot_state.K_F_ext_hat_K.data());
 
         for (size_t i = 0; i < 6; ++i) {
-        filtered_wrench[i] = franka::lowpassFilter(config.kDeltaT,
-                                        filtered_wrench[i],
-                                        robot_state.K_F_ext_hat_K[i],
-                                        franka::kDefaultCutoffFrequency);
+            filtered_wrench[i] = franka::lowpassFilter(config.kDeltaT,
+                                            filtered_wrench[i],
+                                            robot_state.K_F_ext_hat_K[i],
+                                            franka::kDefaultCutoffFrequency);
         }
         
         filtered_wrench = Eigen::Map<const RUT::Vector6d>(robot_state.K_F_ext_hat_K.data());
@@ -757,17 +774,5 @@ franka::Duration FRANKA::Implementation::getElapsedTime() {
 }
 
 franka::RobotState FRANKA::Implementation::getRobotState() {
-
     return robot_state;
-}
-
-bool FRANKA::Implementation::getCartesianVelocity(RUT::Vector6d& velocity) {
-    try {
-        //read from the state without calling readOnce() to avoid latency
-        const auto& robot_state = this->robot_state;
-        velocity = Eigen::Map<const RUT::Vector6d>(robot_state.O_dP_EE_c.data());
-        return true;
-    } catch (...) {
-        return false;
-    }
 }

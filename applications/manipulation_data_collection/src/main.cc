@@ -51,13 +51,15 @@ int main() {
       - robot
       - gripper (if gripper)
       - wrench (if sensor)
+
+    if controller is impedance controller, the wrench buffer needs some time to fill up
   */ 
   while (!server.is_ready()) {
     std::cout << "Waiting for server to be ready." << std::endl;
     std::this_thread::sleep_for(std::chrono::milliseconds(400));
   }
 
-  // use all dofs for compliance
+  // use all dofs for compliance (not used in impedance controller)
   RUT::Matrix6d Tr = RUT::Matrix6d::Identity();
   int n_af = 6;
   // tells the admittance controller which directions are compliant to external force (solo en admitance)

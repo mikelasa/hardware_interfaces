@@ -1,6 +1,8 @@
 /**
- * URRTDE: wrapper around ur franka implementation
- * https://sdurobotics.gitlab.io/ur_rtde/index.html
+ * FRANKA: Wrapper around Franka robot implementation
+ * 
+ * This class provides a high-level interface for controlling Franka robots,
+ * implementing the RobotInterfaces base class for standardized robot control.
  *
  * Author:
  *      Mikel Lasa <mlasa@mondragon.edu>
@@ -16,7 +18,7 @@
 
 #include "hardware_interfaces/robot_interfaces.h"
 
-//include franka headers
+// Include Franka headers
 #include "robot_impl.h"
 #include "model.h"
 
@@ -25,31 +27,40 @@ class Model;
 class FRANKA : public RobotInterfaces {
 
     public:
+        /**
+         * Configuration structure for FRANKA robot initialization
+         * Contains all necessary parameters for robot setup and control
+         */
         struct FRANKAConfig {
-            std::string robot_ip{};
-            double log_size{1000};
-            double tcp_mass{0.1};
-            std::array<double, 3> fx_c_load{{0.0, 0.0, 0.0}}; // default origin
-            std::array<double, 9> tcp_inertia{{0.0, 0.0, 0.0,
+            std::string robot_ip{};                                 // Robot IP address
+            double log_size{1000};                                  // Log buffer size
+            double tcp_mass{0.1};                                   // Tool Center Point mass (kg)
+            std::array<double, 3> fx_c_load{{0.0, 0.0, 0.0}};      // Load center of mass position
+            std::array<double, 9> tcp_inertia{{0.0, 0.0, 0.0,      // Tool inertia matrix
                                            0.0, 0.0, 0.0,
-                                           0.0, 0.0, 0.0}}; // default inertia
-            RUT::Vector3d deviation{10.0, 3.12, 2 * M_PI};
-            double kDeltaT{1e-3}; // Time step for filtering and rate limiting
-            double CutoffFrequency{100}; // Cutoff frequency for low-pass filter
-            std::string realtime_config{"enforce"}; // "ignore" or "enforce"
-            std::string controller_mode{"external_controller"}; // "joint_impedance", "cartesian_impedance", "external_controller"
-            std::string motion_generator_mode{"joint_velocity"}; // "joint_position", "joint_velocity", "cartesian_position", "cartesian_velocity"
-            std::array<double, 7> setJointImpedance{{0, 0, 0, 0, 0, 0, 0}};
-            std::array<double, 6> setCartesianImpedance{{0, 0, 0, 0, 0, 0}};
-            double kMaxTranslationalVelocity{1.96};
-            double kMaxTranslationalAcceleration{12.99};
-            double kMaxTranslationalJerk{12500};
-            double kMaxRotationalVelocity{2.424};
-            double kMaxRotationalAcceleration{24.999};
-            double kMaxRotationalJerk{12500};
+                                           0.0, 0.0, 0.0}};
+            RUT::Vector3d deviation{10.0, 3.12, 2 * M_PI};         // Maximum path deviation [trans, rot, elbow]
+            double kDeltaT{1e-3};                                   // Time step for filtering and rate limiting
+            double CutoffFrequency{100};                            // Cutoff frequency for low-pass filter
+            std::string realtime_config{"enforce"};                 // Realtime config: "ignore" or "enforce"
+            std::string controller_mode{"external_controller"};     // Controller mode options
+            std::string motion_generator_mode{"joint_velocity"};    // Motion generator mode options
+            std::array<double, 7> setJointImpedance{{0, 0, 0, 0, 0, 0, 0}};        // Joint impedance values
+            std::array<double, 6> setCartesianImpedance{{0, 0, 0, 0, 0, 0}};       // Cartesian impedance values
+            
+            // Motion limits
+            double kMaxTranslationalVelocity{1.96};                 // Max translational velocity (m/s)
+            double kMaxTranslationalAcceleration{12.99};            // Max translational acceleration (m/s²)
+            double kMaxTranslationalJerk{12500};                    // Max translational jerk (m/s³)
+            double kMaxRotationalVelocity{2.424};                   // Max rotational velocity (rad/s)
+            double kMaxRotationalAcceleration{24.999};              // Max rotational acceleration (rad/s²)
+            double kMaxRotationalJerk{12500};                       // Max rotational jerk (rad/s³)
 
             RobotInterfaceConfig robot_interface_config{};
 
+            /**
+             * Helper function to deserialize YAML arrays into std::array
+             */
             template <typename T, std::size_t N>
             static std::array<T, N> deserialize_array(const YAML::Node& node) {
                 if (!node || !node.IsSequence()) {
@@ -65,6 +76,11 @@ class FRANKA : public RobotInterfaces {
                 return data;
             }
     
+            /**
+             * Deserialize configuration from YAML node
+             * @param node YAML node containing configuration parameters
+             * @return true if deserialization successful, false otherwise
+             */
             bool deserialize(const YAML::Node& node) {
                 try {
                     robot_ip = node["robot_ip"].as<std::string>();
@@ -99,83 +115,205 @@ class FRANKA : public RobotInterfaces {
         ~FRANKA();
 
         /**
-         * Initialize socket communication. Create a thread to run the 500Hz
-         * communication with URe.
-         *
-         * @param[in]  time0    Start time. Time will count from this number.
-         * @param[in]  config   controller configs.
-         *
-         * @return     True if success.
+         * Initialize robot communication and create control thread
+         * 
+         * @param time0  Start time reference point
+         * @param config Robot configuration parameters
+         * @return true if initialization successful, false otherwise
          */
         bool init(RUT::TimePoint time0, const FRANKAConfig& config);
 
-        /*
-            *get Cartesian pose of the robot tool. Distances are in mm.
-            * @param      pose  The Cartesian pose. [x y z qw qx qy qz]
-            *get Cartesian velocity of the robot tool. Distances are in mm/s.
-            * @param      velocity  The Cartesian velocity. [vx vy vz wx wy wz]
-            *set Cartesian pose of the robot tool. Distances are in mm.
-            * @param[in]  pose  The Cartesian pose. [x y z qw qx qy qz]
-            *get joint angles in rad.
-            * @param      joints  The joints.
-            * set joint angles in rad.
-            * @param[in]  joints  The joints.
-        */
-        bool getCartesian(RUT::Vector7d& pose_xyzq) override;
-        bool setCartesian(const RUT::Vector7d& pose_xyzq) override;
-        bool getJoints(RUT::VectorXd& joints) override;
-        bool setJoints(const RUT::VectorXd& joints) override;
-        bool getTorques(RUT::VectorXd& torques);
-        bool setTorques(const RUT::VectorXd& torques);
-        bool getWrenchBaseOnTool(RUT::Vector6d& wrench);
-        bool getWrenchTool(RUT::Vector6d& wrench);
-        bool getCartesianVelocity(RUT::Vector6d& velocity) override;
+        // ========== RobotInterfaces Implementation ==========
         
-        /* helpers to expose internal robot_state and get current pose and wrench without using readOnce()
-        */
+        /**
+         * Get current Cartesian pose of the robot tool
+         * @param pose_xyzq Cartesian pose [x, y, z, qw, qx, qy, qz] (distances in mm)
+         * @return true if successful
+         */
+        bool getCartesian(RUT::Vector7d& pose_xyzq) override;
+        
+        /**
+         * Set target Cartesian pose of the robot tool
+         * @param pose_xyzq Target Cartesian pose [x, y, z, qw, qx, qy, qz] (distances in mm)
+         * @return true if successful
+         */
+        bool setCartesian(const RUT::Vector7d& pose_xyzq) override;
+        
+        /**
+         * Get current joint angles
+         * @param joints Joint angles in radians
+         * @return true if successful
+         */
+        bool getJoints(RUT::VectorXd& joints) override;
+        
+        /**
+         * Set target joint angles
+         * @param joints Target joint angles in radians
+         * @return true if successful
+         */
+        bool setJoints(const RUT::VectorXd& joints) override;
+        
+        /**
+         * Get current Cartesian velocity of the robot tool
+         * @param velocity Cartesian velocity [vx, vy, vz, wx, wy, wz] (mm/s and rad/s)
+         * @return true if successful
+         */
+        bool getCartesianVelocity(RUT::Vector6d& velocity) override;
+
+        // ========== FRANKA Specific Methods ==========
+        
+        /**
+         * Get current joint torques
+         * @param torques Joint torques in Nm
+         * @return true if successful
+         */
+        bool getTorques(RUT::VectorXd& torques);
+        
+        /**
+         * Set target joint torques
+         * @param torques Target joint torques in Nm
+         * @return true if successful
+         */
+        bool setTorques(const RUT::VectorXd& torques);
+        
+        /**
+         * Get wrench at tool frame expressed in base frame
+         * @param wrench Wrench [fx, fy, fz, mx, my, mz]
+         * @return true if successful
+         */
+        bool getWrenchBaseOnTool(RUT::Vector6d& wrench);
+        
+        /**
+         * Get wrench at tool frame
+         * @param wrench Wrench [fx, fy, fz, mx, my, mz]
+         * @return true if successful
+         */
+        bool getWrenchTool(RUT::Vector6d& wrench);
+        
+        // ========== Helper Methods ==========
+        
+        /**
+         * Get current pose without using readOnce()
+         * @param pose_xyzq Current Cartesian pose [x, y, z, qw, qx, qy, qz]
+         * @return true if successful
+         */
         bool getCurrentPose(RUT::Vector7d& pose_xyzq);
+        
+        /**
+         * Get current wrench at tool without using readOnce()
+         * @param wrench Current wrench [fx, fy, fz, mx, my, mz]
+         * @return true if successful
+         */
         bool getCurrentWrenchTool(RUT::Vector6d& wrench);
+        
+        /**
+         * Get elapsed time since robot initialization
+         * @return Elapsed time duration
+         */
         franka::Duration getElapsedTime();
+        
+        /**
+         * Get current robot state
+         * @return Current robot state
+         */
         franka::RobotState getRobotState();
 
-        /* funciones de robot_impl.h 
-        * readOnce lee el estado del robot una vez
-        * update actualiza el estado del robot con el comando de generador de movimiento y el comando de controlador
-        * startMotion inicia un movimiento del robot, devuelve el id del movimiento
-        * finishMotion termina un movimiento del robot
-        * cancelMotion cancela un movimiento del robot
-        * throwOnMotionError lanza una excepcion si hay un error en el movimiento del robot
-        * realtimeConfig devuelve la configuracion de tiempo real del robot
-        */
-
+        // ========== Low-Level Robot Control ==========
+        
+        /**
+         * Read robot state once
+         * @return Current robot state
+         */
         franka::RobotState readOnce();
+        
+        /**
+         * Update robot state with motion and control commands
+         * @param motion_command Motion generator command
+         * @param control_command Controller command
+         * @return Updated robot state
+         */
         franka::RobotState update(const research_interface::robot::MotionGeneratorCommand* motion_command,
                                    const research_interface::robot::ControllerCommand* control_command);
+        
+        /**
+         * Start a new motion with specified modes and deviations
+         * @param controller_mode Controller mode for the motion
+         * @param motion_generator_mode Motion generator mode
+         * @param maximum_path_deviation Maximum allowed path deviation
+         * @param maximum_goal_pose_deviation Maximum allowed goal pose deviation
+         * @return Motion ID for tracking
+         */
         uint32_t startMotion(research_interface::robot::Move::ControllerMode controller_mode,
                          research_interface::robot::Move::MotionGeneratorMode motion_generator_mode,
                          const research_interface::robot::Move::Deviation& maximum_path_deviation,
                          const research_interface::robot::Move::Deviation& maximum_goal_pose_deviation);
-        void finishMotion( uint32_t motion_id,
+        
+        /**
+         * Finish a motion with final commands
+         * @param motion_id ID of the motion to finish
+         * @param motion_command Final motion command
+         * @param control_command Final control command
+         */
+        void finishMotion(uint32_t motion_id,
                         const research_interface::robot::MotionGeneratorCommand* motion_command,
                         const research_interface::robot::ControllerCommand* control_command);
+        
+        /**
+         * Cancel an active motion
+         * @param motion_id ID of the motion to cancel
+         */
         void cancelMotion(uint32_t motion_id);
+        
+        /**
+         * Check for motion errors and throw exception if found
+         * @param robot_state Current robot state to check
+         * @param motion_id ID of the motion to check
+         */
         void throwOnMotionError(const franka::RobotState& robot_state, uint32_t motion_id);
 
-        // functions to start different motion sessions: cartesian, joint, impedance...
+        // ========== Motion Session Management ==========
+        
+        /**
+         * Start a Cartesian motion session
+         * @param controller_mode Controller mode for the motion
+         * @param motion_generator_mode Motion generator mode
+         * @return true if motion started successfully
+         */
         bool startCartesianMotion(
-        research_interface::robot::Move::ControllerMode controller_mode,
-        research_interface::robot::Move::MotionGeneratorMode motion_generator_mode
+            research_interface::robot::Move::ControllerMode controller_mode,
+            research_interface::robot::Move::MotionGeneratorMode motion_generator_mode
         );
 
+        /**
+         * Finish the current active motion session
+         */
         void finishCurrentMotion();
 
-        /*funciones para setear comportamientos en el robot
-        * setJointImpedance setea la impedancia en las juntas del robot
-        * setCartesianImpedance setea la impedancia en el espacio cartesiano del robot
-        * setCollisionBehavior setea el comportamiento de colision del robot
-        */
+        // ========== Robot Behavior Configuration ==========
+        
+        /**
+         * Set joint impedance parameters
+         * @param K_theta Joint stiffness values [7 joints]
+         */
         void setJointImpedance(const std::array<double, 7>& K_theta);
+        
+        /**
+         * Set Cartesian impedance parameters
+         * @param K_x Cartesian stiffness values [x, y, z, rx, ry, rz]
+         */
         void setCartesianImpedance(const std::array<double, 6>& K_x);
+        
+        /**
+         * Configure collision detection behavior
+         * @param lower_torque_thresholds_acceleration Lower torque thresholds for acceleration
+         * @param upper_torque_thresholds_acceleration Upper torque thresholds for acceleration
+         * @param lower_torque_thresholds_nominal Lower torque thresholds for nominal operation
+         * @param upper_torque_thresholds_nominal Upper torque thresholds for nominal operation
+         * @param lower_force_thresholds_acceleration Lower force thresholds for acceleration
+         * @param upper_force_thresholds_acceleration Upper force thresholds for acceleration
+         * @param lower_force_thresholds_nominal Lower force thresholds for nominal operation
+         * @param upper_force_thresholds_nominal Upper force thresholds for nominal operation
+         */
         void setCollisionBehavior(const std::array<double, 7>& lower_torque_thresholds_acceleration,
                             const std::array<double, 7>& upper_torque_thresholds_acceleration,
                             const std::array<double, 7>& lower_torque_thresholds_nominal,
@@ -184,17 +322,25 @@ class FRANKA : public RobotInterfaces {
                             const std::array<double, 6>& upper_force_thresholds_acceleration,
                             const std::array<double, 6>& lower_force_thresholds_nominal,
                             const std::array<double, 6>& upper_force_thresholds_nominal);
+        
+        /**
+         * Set load parameters for the robot end-effector
+         * @param load_mass Mass of the load in kg
+         * @param F_x_Cload Center of mass of the load relative to flange frame
+         * @param load_inertia Inertia matrix of the load
+         */
         void setLoad(double load_mass,
-               const std::array<double, 3>& F_x_Cload,  // NOLINT(readability-identifier-naming)
+               const std::array<double, 3>& F_x_Cload,
                const std::array<double, 9>& load_inertia);
 
-        //load model
+        /**
+         * Load robot kinematic and dynamic model
+         * @return Franka robot model
+         */
         franka::Model loadModel();
 
-        
-
     private:
-        // crear un puntero a la clase Robot::Impl (Pimpl idiom)
+        // Pimpl idiom: Private implementation pointer
         struct Implementation;
         std::unique_ptr<Implementation> impl_;
 };
