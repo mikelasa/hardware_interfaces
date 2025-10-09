@@ -129,6 +129,7 @@ class FRANKA : public RobotInterfaces {
         bool setTorques(const RUT::VectorXd& torques);
         bool getWrenchBaseOnTool(RUT::Vector6d& wrench);
         bool getWrenchTool(RUT::Vector6d& wrench);
+        bool getCartesianVelocity(RUT::Vector6d& velocity) override;
         
         /* helpers to expose internal robot_state and get current pose and wrench without using readOnce()
         */

@@ -47,6 +47,7 @@ struct ManipServerConfig {
   int wrench_buffer_size{100};
   bool mock_hardware{false};
   bool bimanual{false};
+  int joint_sensor_frequency{1000};
   RobotSelection robot_selection{RobotSelection::FRANKA};
   CameraSelection camera_selection{CameraSelection::NONE};
   ForceSensingMode force_sensing_mode{ForceSensingMode::NONE};
@@ -68,6 +69,7 @@ struct ManipServerConfig {
       wrench_buffer_size = node["wrench_buffer_size"].as<int>();
       mock_hardware = node["mock_hardware"].as<bool>();
       bimanual = node["bimanual"].as<bool>();
+      joint_sensor_frequency = node["joint_sensor_frequency"].as<int>();
       robot_selection = string_to_enum<RobotSelection>(
           node["robot_selection"].as<std::string>());
       camera_selection = string_to_enum<CameraSelection>(
@@ -289,10 +291,13 @@ class ManipServer {
   std::deque<std::mutex> _wrench_fb_mtxs;
 
   // loop functions
-  void robot_loop(const RUT::TimePoint& time0, int robot_id);
+  void robot_admittance_loop(const RUT::TimePoint& time0, int robot_id);
+  void robot_impedance_loop(const RUT::TimePoint& time0, int robot_id);
   void eoat_loop(const RUT::TimePoint& time0, int robot_id);
   void rgb_loop(const RUT::TimePoint& time0, int camera_id);
-  void wrench_loop(const RUT::TimePoint& time0, int publish_rate,
+  void ext_sensor_wrench_loop(const RUT::TimePoint& time0, int publish_rate,
                    int sensor_id);
+  void joint_sensor_wrench_loop(const RUT::TimePoint& time0, int publish_rate,
+                    int sensor_id);
   void rgb_plot_loop();  // opencv plotting does not support multi-threading
 };

@@ -74,6 +74,7 @@ bool ManipServer::initialize(const std::string& config_path) {
         }
         robot_ptrs.emplace_back(new FRANKA);
         FRANKA* franka_ptr = static_cast<FRANKA*>(robot_ptrs[id].get());
+        std::cout << "[DEBUG]franka_ptr: " << franka_ptr << std::endl;
         if (!franka_ptr->init(time0, robot_config)) {
           std::cerr << "Failed to initialize Franka for id " << id
                     << ". Exiting." << std::endl;
@@ -205,7 +206,9 @@ bool ManipServer::initialize(const std::string& config_path) {
         wrench_publish_rate.push_back(coinft_config.publish_rate);
       } else if (_config.force_sensing_mode == ForceSensingMode::JOINT_SENSORS) {
         //uses robot's internal joint torque sensors, so no config needed
+        //instead create a mock force sensor
         std::cout << "[Force sensor]Using joint torque sensors for force sensing." << std::endl;
+
       } else {
         std::cerr << "Invalid force sensing mode. Exiting." << std::endl;
         return false;
@@ -220,7 +223,7 @@ bool ManipServer::initialize(const std::string& config_path) {
 
   // initialize Admittance controller, for each arm in id_list
   for (int id : _id_list) {
-    if (_config.controller_selection != ControllerSelection::ADMITTANCE_CONTROLLER) 
+    if (_config.controller_selection == ControllerSelection::ADMITTANCE_CONTROLLER) 
     {
       // create a new instance of the AdmittanceController
     AdmittanceController::AdmittanceControllerConfig admittance_config;
@@ -263,6 +266,7 @@ bool ManipServer::initialize(const std::string& config_path) {
     _dampings_high.push_back(admittance_config.compliance6d.damping);
     _dampings_low.push_back(_config.low_damping);
     }
+
     else if (_config.controller_selection == ControllerSelection::IMPEDANCE_CONTROLLER) 
     {
       // create a new instance of the ImpedanceController
@@ -293,6 +297,11 @@ bool ManipServer::initialize(const std::string& config_path) {
       return false;
     }
 
+    // get jacobbian an state with identity matrix
+    RUT::MatrixXd jacobian(6,7);
+    _impedance_controllers[id].getJacobian(jacobian);
+    // Force controlled axis doesnt really matter for impedance controller
+    // mantain the original author implementation
     // set the force controlled axis, use all dofs for compliance
     RUT::Matrix6d Tr = RUT::Matrix6d::Identity();
     // The robot should not behave with any compliance during initialization.
@@ -307,15 +316,18 @@ bool ManipServer::initialize(const std::string& config_path) {
     _dampings_low.push_back(_config.low_damping);
       
     }
-  
   }
 
   // create the data buffers
   // each variable is saved using DataBuffer, which is a thread-safe circular buffer
   // the buffers are initialized with the appropriate sizes and names
   std::cout << "[ManipServer] Creating data buffers.\n";
+  int num_ft_sensors = 0;
   for (int id : _id_list) {
-    int num_ft_sensors = force_sensor_ptrs[id]->getNumSensors();
+    if (_config.force_sensing_mode != ForceSensingMode::JOINT_SENSORS) {
+      num_ft_sensors = force_sensor_ptrs[id]->getNumSensors();
+    }
+    
     _camera_rgb_buffers.push_back(RUT::DataBuffer<Eigen::MatrixXd>());
     _pose_buffers.push_back(RUT::DataBuffer<Eigen::VectorXd>());
     _vel_buffers.push_back(RUT::DataBuffer<Eigen::VectorXd>());
@@ -453,14 +465,23 @@ bool ManipServer::initialize(const std::string& config_path) {
       _rgb_threads.emplace_back(&ManipServer::rgb_loop, this, std::ref(time0),
                                 id);
     }
-    if (_config.run_wrench_thread) {
-      _wrench_threads.emplace_back(&ManipServer::wrench_loop, this,
+    if (_config.run_robot_thread) {
+      if (_config.controller_selection == ControllerSelection::ADMITTANCE_CONTROLLER) {
+        _robot_threads.emplace_back(&ManipServer::robot_admittance_loop, this,
+                                    std::ref(time0), id);
+      } else if (_config.controller_selection == ControllerSelection::IMPEDANCE_CONTROLLER) {
+        _robot_threads.emplace_back(&ManipServer::robot_impedance_loop, this,
+                                    std::ref(time0), id);
+      }
+    }
+    if (_config.run_wrench_thread && _config.force_sensing_mode != ForceSensingMode::JOINT_SENSORS) {
+      _wrench_threads.emplace_back(&ManipServer::ext_sensor_wrench_loop, this,
                                    std::ref(time0), wrench_publish_rate[id],
                                    id);
-    }
-    if (_config.run_robot_thread) {
-      _robot_threads.emplace_back(&ManipServer::robot_loop, this,
-                                  std::ref(time0), id);
+    }else if (_config.run_wrench_thread && _config.force_sensing_mode == ForceSensingMode::JOINT_SENSORS) {
+      //if using joint torque sensors, launch the joint torque loop instead
+      _wrench_threads.emplace_back(&ManipServer::joint_sensor_wrench_loop, this,
+                                  std::ref(time0), _config.joint_sensor_frequency, id);
     }
     if (_config.run_eoat_thread) {
       _eoat_threads.emplace_back(&ManipServer::eoat_loop, this, std::ref(time0),
@@ -478,19 +499,19 @@ bool ManipServer::initialize(const std::string& config_path) {
   while (true) {
     bool all_ready = true;
     {
-      std::lock_guard<std::mutex> lock(_ctrl_mtx);
-      for (int id : _id_list) {
-        if (_config.run_rgb_thread) {
-          all_ready = all_ready && _states_rgb_thread_ready[id];
+          std::lock_guard<std::mutex> lock(_ctrl_mtx);
+          for (int id : _id_list) {
+        if (_config.run_robot_thread && !_states_robot_thread_ready[id]) {
+          std::cout << "[DEBUG] Robot thread " << id << " not ready" << std::endl;
+          all_ready = false;
         }
-        if (_config.run_wrench_thread) {
-          all_ready = all_ready && _states_wrench_thread_ready[id];
+        if (_config.run_wrench_thread && !_states_wrench_thread_ready[id]) {
+          std::cout << "[DEBUG] Wrench thread " << id << " not ready" << std::endl;
+          all_ready = false;
         }
-        if (_config.run_robot_thread) {
-          all_ready = all_ready && _states_robot_thread_ready[id];
-        }
-        if (_config.run_eoat_thread) {
-          all_ready = all_ready && _states_eoat_thread_ready[id];
+        if (_config.run_rgb_thread && !_states_rgb_thread_ready[id]) {
+          std::cout << "[DEBUG] RGB thread " << id << " not ready" << std::endl;
+          all_ready = false;
         }
       }
       if (_config.plot_rgb) {

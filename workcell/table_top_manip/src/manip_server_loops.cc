@@ -5,10 +5,339 @@
 
 #include "helpers.hpp"
 
-// robot control loop
-void ManipServer::robot_loop(const RUT::TimePoint& time0, int id) {
+// robot loop implementation for impedance controller
+void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
   std::string header =
-      "[ManipServer][Robot thread] " + std::to_string(id) + ": ";
+      "[ManipServer][Robot Impedance thread] " + std::to_string(id) + ": ";
+  std::cout << header + "starting thread.\n";
+
+  /* --------- VARIABLES --------- */
+  // using the global timer, creates a local timer for this thread
+  RUT::Timer timer;
+  timer.tic(time0);  // so this timer is synced with the main timer
+
+  RUT::Vector7d pose_fb; // current pose feedback
+  RUT::Vector6d vel_fb; // current velocity feedback
+  RUT::Vector7d pose_target_waypoint; // target pose waypoint
+  RUT::Vector7d ref_pose; //reference pose
+  RUT::Vector7d torque_robot_cmd; // torque command for robot (step output)
+
+  // The following two initial values are used in mock hardware mode
+  pose_fb << id, 0, 0, 1, 0, 0, 0;
+  torque_robot_cmd = RUT::Vector7d::Zero();
+  vel_fb << 0, 0, 0, 0, 0, 0;
+
+  RUT::Vector6d wrench_fb_ur, wrench_WTr; // current wrench feedback and transformed wrench world to tool frame
+  RUT::Matrix6d stiffness;
+
+  /* --------- INITIALIZATION (ROBOT, INTERPOLATOR, PROFILER) --------- */
+
+  // pointer to the robot, to access specific functions
+  FRANKA* franka_ptr;
+
+  // Get FRANKA pointer and get initial pose
+  if (!_config.mock_hardware) {
+    franka_ptr = static_cast<FRANKA*>(robot_ptrs[id].get());
+    franka_ptr->getCartesian(pose_fb);
+  }
+
+   // initialize jacobain, state and model for franka
+  franka::Model model = franka::Model(franka_ptr->loadModel());
+  franka::RobotState state = franka_ptr->getRobotState();
+  std::array<double, 42> jacobian_array = model.zeroJacobian(franka::Frame::kEndEffector, state);
+  Eigen::Map<const Eigen::Matrix<double, 6, 7>> jacobian(jacobian_array.data());
+
+  // set initial values for force control
+  ref_pose = pose_fb;
+  wrench_WTr.setZero();
+
+  // Initialize control flags
+  bool ctrl_flag_saving = false;  // local copy
+
+  //A controller that interpolates linearly between two Cartesian targets.
+  // initializes with the current pose and timestamp
+  RUT::TaskSpaceInterpolationController intp_controller;
+  intp_controller.initialize(pose_fb, timer.toc_ms());
+  std::cout << header << "intp_controller initialized with pose_fb: "
+            << pose_fb.transpose() << std::endl;
+
+  // this part sets the robot thread state to ready (initialize in manip server)
+  {
+    std::lock_guard<std::mutex> lock(_ctrl_mtx);
+    _states_robot_thread_ready[id] = true;
+  }
+
+  // profile measures the loop execution time and performance (important for real time control)
+  RUT::Profiler loop_profiler;
+  std::cout << header << "Loop started." << std::endl;
+
+  std::cout << "[Robot thread] About to enter main while loop..." << std::endl;
+
+  while (true) {
+    std::cout << "[Robot thread] Main loop iteration - populating wrench buffer" << std::endl;
+    
+    // Add dummy data temporarily:
+    {
+      std::lock_guard<std::mutex> lock(_robot_wrench_buffer_mtxs[id]);
+      RUT::Vector6d dummy_wrench;
+      dummy_wrench.setZero();
+      _robot_wrench_buffers[id].put(dummy_wrench);
+      std::cout << "[Robot thread] Added wrench to buffer, size: " << _robot_wrench_buffers[id].size() << std::endl;
+    }
+    
+    // ... rest of your loop
+    break; // Remove this after testing
+  }
+
+  RUT::Timer mock_loop_timer;
+  // Control loop at 1kHz for franka, can be changed if needed
+  mock_loop_timer.set_loop_rate_hz(1000);
+  mock_loop_timer.start_timed_loop();
+
+  /* --------- CONTROL LOOP --------- */
+
+  while (true) {
+    // Update robot status
+    loop_profiler.start();
+    RUT::TimePoint t_start;
+    double time_now_ms;
+    if (!_config.mock_hardware) {
+      /* --------- UPDATE STATES --------- */
+      // updates robot states
+      franka_ptr->getCurrentPose(pose_fb);
+      franka_ptr->getCurrentWrenchTool(wrench_fb_ur);
+      //franka_ptr->getCartesianVelocity(vel_fb);
+      state = franka_ptr->getRobotState();
+      jacobian_array = model.zeroJacobian(franka::Frame::kEndEffector, state);
+
+      //update controller states for jacobian
+      _impedance_controllers[id].getJacobian(Eigen::Map<const Eigen::Matrix<double, 6, 7>>(jacobian_array.data()));
+      _impedance_controllers[id].getRobotState(state);
+
+      // map the array to eigen
+      time_now_ms = timer.toc_ms();
+
+      // save feedback in buffers
+      loop_profiler.stop("compute");
+      loop_profiler.start();
+      {
+        std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
+        _poses_fb[id] = pose_fb;
+      }
+      loop_profiler.stop("lock");
+      loop_profiler.start();
+
+    } else {
+      // mock hardware
+      time_now_ms = timer.toc_ms();
+      wrench_fb_ur.setZero();
+    }
+    /* --------- UPDATE BUFFERS --------- */
+    // buffer robot pose, velocity and wrench (save data)
+    loop_profiler.stop("compute");
+    loop_profiler.start();
+    {
+      std::lock_guard<std::mutex> lock(_pose_buffer_mtxs[id]);
+      _pose_buffers[id].put(pose_fb);
+      _pose_timestamp_ms_buffers[id].put(time_now_ms);
+    }
+    //{
+      //std::lock_guard<std::mutex> lock(_vel_buffer_mtxs[id]);
+      //_vel_buffers[id].put(vel_fb);
+      //_vel_timestamp_ms_buffers[id].put(time_now_ms);
+    //}
+    {
+      std::lock_guard<std::mutex> lock(_robot_wrench_buffer_mtxs[id]);
+      _robot_wrench_buffers[id].put(wrench_fb_ur);
+      _robot_wrench_timestamp_ms_buffers[id].put(time_now_ms);
+    }
+    loop_profiler.stop("lock");
+    loop_profiler.start();
+
+    /* --------- UPDATE INTERPOLATOR --------- */
+    // update  target from interpolation controller
+    // get_control returns false if no valid target is found, if so, needs to create a new one
+    if (!intp_controller.get_control(time_now_ms, ref_pose)) {
+      bool new_wp_found = false;
+      {
+        // need to get new waypoint from buffer
+        std::lock_guard<std::mutex> lock(_waypoints_buffer_mtxs[id]);
+        while (!_waypoints_buffers[id].is_empty()) {
+          // keep querying buffer until we get a target that is in the future
+          pose_target_waypoint = _waypoints_buffers[id].pop();
+          double target_time_ms = _waypoints_timestamp_ms_buffers[id].pop();
+          if (target_time_ms > time_now_ms) {
+            intp_controller.set_new_target(pose_target_waypoint,
+                                           target_time_ms);
+            new_wp_found = true;
+            break;
+          }
+        }
+      }
+      if (!new_wp_found) {
+        // std::cout << "[debug] time_now_ms: " << time_now_ms
+        //           << ", time now: " << timer.toc_ms()
+        //           << ", target_time_ms:" << target_time_ms
+        //           << ", pose_target_waypoint: "
+        //           << pose_target_waypoint.transpose() << std::endl;
+        intp_controller.keep_the_last_target(time_now_ms);
+      }
+      intp_controller.get_control(time_now_ms, ref_pose);
+    }
+
+    loop_profiler.stop("intp_controller");
+    loop_profiler.start();
+
+    /* --------- UPDATE STIFFNESS --------- */
+    // update stiffness matrix from buffer
+    // condition:
+    //   time_now_ms < time[0], do nothing
+    //   time_now_ms >= time[0], look for next
+    bool new_stiffness_found = false;
+    {
+      std::lock_guard<std::mutex> lock(_stiffness_buffer_mtxs[id]);
+      if (!_stiffness_buffers[id].is_empty()) {
+        double next_available_time_ms = _stiffness_timestamp_ms_buffers[id][0];
+        if (time_now_ms > next_available_time_ms) {
+          new_stiffness_found = true;
+          while ((!_stiffness_timestamp_ms_buffers[id].is_empty()) &&
+                 (_stiffness_timestamp_ms_buffers[id][0] < time_now_ms)) {
+            stiffness = _stiffness_buffers[id].pop();
+            next_available_time_ms = _stiffness_timestamp_ms_buffers[id].pop();
+          }
+        }
+      }
+    }
+    loop_profiler.stop("stiffness");
+    loop_profiler.start();
+
+    wrench_WTr.setZero();
+
+    /* --------- UPDATE CONTROLLER --------- */
+    // std::cout << "[debug] time: " << time_now_ms
+    //           << ", wrench_fb_ur: " << wrench_fb_ur.transpose()
+    //           << ", wrench_WTr: " << wrench_WTr.transpose() << std::endl;
+
+    // Update the compliance controller
+    {
+      std::lock_guard<std::mutex> lock(_controller_mtxs[id]);
+      loop_profiler.stop("controller_lock");
+      loop_profiler.start();
+      _impedance_controllers[id].setRobotStatus(pose_fb, wrench_fb_ur);
+      // Update robot reference
+      _impedance_controllers[id].setRobotReference(ref_pose, wrench_WTr);
+
+      // Update stiffness matrix
+      if (new_stiffness_found) {
+        _impedance_controllers[id].setStiffnessMatrix(stiffness);
+      }
+      loop_profiler.stop("controller_set");
+      loop_profiler.start();
+      // Compute the control output
+      _impedance_controllers[id].step(torque_robot_cmd);
+      loop_profiler.stop("controller_step");
+      loop_profiler.start();
+    }
+    
+    // Send control command to the robot
+    if ((!_config.mock_hardware) &&
+        (!franka_ptr->setTorques(torque_robot_cmd))) {
+      std::cout << header << "setTorques failed. Ending thread."
+                << std::endl;
+      std::cout << header << "last pose_fb: " << pose_fb.transpose()
+                << std::endl;
+      std::cout << header << "last wrench_fb_ur: " << wrench_fb_ur.transpose()
+                << std::endl;
+      std::cout << header << "last ref_pose: "
+                << ref_pose.transpose() << std::endl;
+      std::cout << header << "last torque : " << torque_robot_cmd.transpose()
+                << std::endl;
+      break;
+    }
+
+    // std::cout << "t = " << timer.toc_ms()
+    //           << ", pose_rdte_cmd: " << pose_rdte_cmd.transpose() << std::endl;
+
+    // logging
+    _ctrl_mtx.lock();
+    if (_ctrl_flag_saving) {
+      _ctrl_mtx.unlock();
+
+      if (!ctrl_flag_saving) {
+        std::cout << "[robot thread] Start saving low dim data." << std::endl;
+        json_file_start(_ctrl_robot_data_streams[id]);
+        ctrl_flag_saving = true;
+      }
+
+      _states_robot_thread_saving[id] = true;
+      save_robot_data_json(_ctrl_robot_data_streams[id],
+                           _states_robot_seq_id[id], timer.toc_ms(), pose_fb,
+                           false);
+      json_frame_ending(_ctrl_robot_data_streams[id]);
+      _states_robot_seq_id[id]++;
+    } else {
+      _ctrl_mtx.unlock();
+
+      if (ctrl_flag_saving) {
+        std::cout << "[robot thread] Stop saving low dim data." << std::endl;
+        // save one last frame, so we can do the correct different frame ending
+        save_robot_data_json(_ctrl_robot_data_streams[id],
+                             _states_robot_seq_id[id], timer.toc_ms(), pose_fb,
+                             false);
+        json_file_ending(_ctrl_robot_data_streams[id]);
+        _ctrl_robot_data_streams[id].close();
+        ctrl_flag_saving = false;
+        _states_robot_thread_saving[id] = false;
+      }
+    }
+
+    loop_profiler.stop("logging");
+    loop_profiler.start();
+
+    // loop control
+    {
+      std::lock_guard<std::mutex> lock(_ctrl_mtx);
+      if (!_ctrl_flag_running) {
+        std::cout << "[robot thread] _ctrl_flag_running is false. Shuting "
+                     "down this thread."
+                  << std::endl;
+        break;
+      }
+    }
+
+    loop_profiler.stop("lock");
+
+    // loop timing and overrun check
+    if (_config.mock_hardware) {
+      mock_loop_timer.sleep_till_next();
+    } else {
+      double overrun_ms = mock_loop_timer.check_for_overrun_ms(false);
+      if (overrun_ms > 0) {
+        /*
+        // TODO MIKEL PRINTEA CONSTANTEMENTE POR OVERRRUN
+        std::cout << "\033[33m";  // set color to bold yellow
+        std::cout << header << "Overrun: " << overrun_ms << "ms" << std::endl;
+        std::cout << "\033[0m";  // reset color to default
+        loop_profiler.show();
+        */
+      }
+      mock_loop_timer.check_for_overrun_ms(
+          false);  // just call it to reset the timer
+    }
+    loop_profiler.clear();
+  }  // end of while loop
+
+  {
+    std::lock_guard<std::mutex> lock(_ctrl_mtx);
+    _ctrl_flag_running = false;
+  }
+  std::cout << "[robot thread] Joined." << std::endl;
+}
+
+//--------ADMITTANCE CONTROLLER LOOP ---------//
+void ManipServer::robot_admittance_loop(const RUT::TimePoint& time0, int id) {
+  std::string header =
+      "[ManipServer][Robot Admittance thread] " + std::to_string(id) + ": ";
   std::cout << header + "starting thread.\n";
 
   // using the global timer, creates a local timer for this thread
@@ -451,7 +780,119 @@ void ManipServer::eoat_loop(const RUT::TimePoint& time0, int id) {
   std::cout << "[EoAT thread] Joined." << std::endl;
 }
 
-void ManipServer::wrench_loop(const RUT::TimePoint& time0, int publish_rate,
+void ManipServer::joint_sensor_wrench_loop(const RUT::TimePoint& time0, int publish_rate, int id) {
+  std::string header = "[ManipServer][Robot Wrench thread] " + std::to_string(id) + ": ";
+  std::cout << header << "thread starting." << std::endl;
+  
+  RUT::Timer timer;
+  timer.tic(time0);
+
+  RUT::Vector6d wrench_fb;
+
+  // wait for robot wrench buffer to be populated
+  std::cout << header << "Waiting for robot thread to populate robot wrench buffer.\n";
+  while (true) {
+    {
+      std::lock_guard<std::mutex> lock(_robot_wrench_buffer_mtxs[id]);
+      std::cout << header << "Checking buffer[" << id << "], size: " << _robot_wrench_buffers[id].size() << std::endl;
+      if (_robot_wrench_buffers[id].size() > 0) {
+        std::cout << header << "Buffer populated! Starting main loop." << std::endl;
+        break;
+      }
+    }
+    usleep(300 * 1000);  // 300ms
+  }
+
+  // Set up timing - can be faster than external sensors since data is already collected
+  RUT::Timer loop_timer;
+  loop_timer.set_loop_rate_hz(publish_rate);  // Match robot frequency
+  loop_timer.start_timed_loop();
+
+  {
+    std::lock_guard<std::mutex> lock(_ctrl_mtx);
+    _states_wrench_thread_ready[id] = true;
+  }
+  std::cout << header << "Thread marked as ready." << std::endl;
+
+  std::cout << header << "Loop started." << std::endl;
+  bool ctrl_flag_saving = false;
+
+  while (true) {
+    double time_now_ms;
+    
+    if (!_config.mock_hardware) {
+      // Read from buffer (populated by robot_impedance_loop at 1kHz)
+      {
+        std::lock_guard<std::mutex> lock(_robot_wrench_buffer_mtxs[id]);
+        if (!_robot_wrench_buffers[id].is_empty()) {
+          wrench_fb = _robot_wrench_buffers[id].pop();  
+        }
+      }
+      time_now_ms = timer.toc_ms();     
+      // Update external wrench buffers (for compatibility with other threads)
+      {
+        std::lock_guard<std::mutex> lock(_wrench_buffer_mtxs[id]);
+        _wrench_buffers[id].put(wrench_fb);
+        _wrench_timestamp_ms_buffers[id].put(time_now_ms);
+      }
+      {
+        std::lock_guard<std::mutex> lock(_wrench_fb_mtxs[id]);
+        _wrench_fb[id] = wrench_fb;
+      }
+    } else {
+      // Mock hardware
+      wrench_fb.setZero();
+      time_now_ms = timer.toc_ms();
+    }
+
+    // JSON logging (same as ext_sensor_wrench_loop)
+    _ctrl_mtx.lock();
+    if (_ctrl_flag_saving) {
+      _ctrl_mtx.unlock();
+
+      if (!ctrl_flag_saving) {
+        std::cout << "[robot wrench thread] Start saving wrench data." << std::endl;
+        json_file_start(_ctrl_wrench_data_streams[id]);
+        ctrl_flag_saving = true;
+      }
+
+      _states_wrench_thread_saving[id] = true;
+      save_wrench_data_json(_ctrl_wrench_data_streams[id],
+                           _states_wrench_seq_id[id], timer.toc_ms(),
+                           wrench_fb);
+      json_frame_ending(_ctrl_wrench_data_streams[id]);
+      _states_wrench_seq_id[id]++;
+    } else {
+      _ctrl_mtx.unlock();
+
+      if (ctrl_flag_saving) {
+        std::cout << "[robot wrench thread] Stop saving wrench data." << std::endl;
+        save_wrench_data_json(_ctrl_wrench_data_streams[id],
+                             _states_wrench_seq_id[id], timer.toc_ms(),
+                             wrench_fb);
+        json_file_ending(_ctrl_wrench_data_streams[id]);
+        _ctrl_wrench_data_streams[id].close();
+        ctrl_flag_saving = false;
+        _states_wrench_thread_saving[id] = false;
+      }
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(_ctrl_mtx);
+      if (!_ctrl_flag_running) {
+        std::cout << "[robot wrench thread] _ctrl_flag_running is false. Shutting down this thread." << std::endl;
+        break;
+      }
+    }
+
+    loop_timer.sleep_till_next();
+  }
+
+  std::cout << "[robot wrench thread] Joined." << std::endl;
+}
+
+//--------WRENCH READING LOOP FROM EXTERNAL SENSOR ---------//
+void ManipServer::ext_sensor_wrench_loop(const RUT::TimePoint& time0, int publish_rate,
                               int id) {
   std::string header =
       "[ManipServer][Wrench thread] " + std::to_string(id) + ": ";

@@ -48,6 +48,7 @@ struct FRANKA::Implementation {
     bool getTorques(RUT::VectorXd& torques);
     bool getWrenchBaseOnTool(RUT::Vector6d& wrench);
     bool getWrenchTool(RUT::Vector6d& wrench);
+    bool getCartesianVelocity(RUT::Vector6d& velocity);
 
     // metodos para setear estado del robot
     bool setCartesian(const RUT::Vector7d& pose_xyzq);
@@ -155,7 +156,56 @@ bool FRANKA::Implementation::initialize(RUT::TimePoint time0, const FRANKA::FRAN
         std::move(network),
         config.log_size,
         rt_config);
-        this->config = config;  
+    this->config = config;
+
+    try {
+        setJointImpedance(this->config.setJointImpedance);
+        setCartesianImpedance(this->config.setCartesianImpedance);
+        setLoad(this->config.tcp_mass, this->config.fx_c_load, this->config.tcp_inertia);
+
+        const std::array<double, 7> lower_torque_thresholds_acceleration{{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}};
+        const std::array<double, 7> upper_torque_thresholds_acceleration{{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}};
+        const std::array<double, 7> lower_torque_thresholds_nominal{{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}};
+        const std::array<double, 7> upper_torque_thresholds_nominal{{20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0}};
+        const std::array<double, 6> lower_force_thresholds_acceleration{{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}};
+        const std::array<double, 6> upper_force_thresholds_acceleration{{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}};
+        const std::array<double, 6> lower_force_thresholds_nominal{{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}};
+        const std::array<double, 6> upper_force_thresholds_nominal{{20.0, 20.0, 20.0, 25.0, 25.0, 25.0}};
+
+        setCollisionBehavior(lower_torque_thresholds_acceleration,
+                             upper_torque_thresholds_acceleration,
+                             lower_torque_thresholds_nominal,
+                             upper_torque_thresholds_nominal,
+                             lower_force_thresholds_acceleration,
+                             upper_force_thresholds_acceleration,
+                             lower_force_thresholds_nominal,
+                             upper_force_thresholds_nominal);
+
+        robot_state = readOnce();
+
+        franka::Model model(loadModel());
+        const std::array<double, 42> initial_jacobian =
+            model.zeroJacobian(franka::Frame::kEndEffector, robot_state);
+        (void)initial_jacobian;
+
+        const research_interface::robot::Move::Deviation deviation_limit{
+            this->config.deviation[0],
+            this->config.deviation[1],
+            this->config.deviation[2]};
+
+        const uint32_t motion_id =
+            startMotion(research_interface::robot::Move::ControllerMode::kExternalController,
+                        research_interface::robot::Move::MotionGeneratorMode::kJointVelocity,
+                        deviation_limit,
+                        deviation_limit);
+        if (motion_id == 0) {
+            std::cerr << "[ERROR] Failed to start Franka motion session." << std::endl;
+            return false;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] Failed to configure Franka robot: " << e.what() << std::endl;
+        return false;
+    }
 
     return true;
 }
@@ -186,6 +236,9 @@ bool FRANKA::getTorques(RUT::VectorXd& torques) {
 }
 bool FRANKA::setTorques(const RUT::VectorXd& torques) {
     return impl_->setTorques(torques);
+}
+bool FRANKA::getCartesianVelocity(RUT::Vector6d& velocity) {
+    return impl_->getCartesianVelocity(velocity);
 }
 
 franka::RobotState FRANKA::readOnce() {
@@ -574,39 +627,39 @@ bool FRANKA::Implementation::setJoints(const RUT::VectorXd& joints) {
 
 
 bool FRANKA::Implementation::setTorques(const RUT::VectorXd& torques) {
-    
-
+    // 1. Move size check out or make it debug-only
+    #ifdef DEBUG
     if (torques.size() != 7) {
         return false;
     }
+    #endif
 
     try {
-        // fill control_command with desired torques and motion command velocity 0
-        for (size_t i = 0; i < 7; ++i) {
-            control_command.tau_J_d[i] = torques(i);
-        }
-        motion_command.dq_c = {0, 0, 0, 0, 0, 0, 0};
+        // 2. Direct memory copy instead of loop
+        std::memcpy(control_command.tau_J_d.data(), torques.data(), 7 * sizeof(double));
 
+        // 3. Zero velocity only once during initialization, not every cycle
+        motion_command.dq_c = {0, 0, 0, 0, 0, 0, 0}; // Move to init
         
-        // Apply low-pass filter to the torque command
-        for (size_t i = 0; i < 7; ++i) {
-            control_command.tau_J_d[i] = franka::lowpassFilter(
-                config.kDeltaT,
-                control_command.tau_J_d[i],
-                robot_state.tau_J_d[i],
-                franka::kDefaultCutoffFrequency
-            );
-        }
+        // 4. Vectorized operations (if possible with your Franka library)
+        // Or unroll the filter loop for better performance
+        control_command.tau_J_d[0] = franka::lowpassFilter(config.kDeltaT, control_command.tau_J_d[0], robot_state.tau_J_d[0], franka::kDefaultCutoffFrequency);
+        control_command.tau_J_d[1] = franka::lowpassFilter(config.kDeltaT, control_command.tau_J_d[1], robot_state.tau_J_d[1], franka::kDefaultCutoffFrequency);
+        control_command.tau_J_d[2] = franka::lowpassFilter(config.kDeltaT, control_command.tau_J_d[2], robot_state.tau_J_d[2], franka::kDefaultCutoffFrequency);
+        control_command.tau_J_d[3] = franka::lowpassFilter(config.kDeltaT, control_command.tau_J_d[3], robot_state.tau_J_d[3], franka::kDefaultCutoffFrequency);
+        control_command.tau_J_d[4] = franka::lowpassFilter(config.kDeltaT, control_command.tau_J_d[4], robot_state.tau_J_d[4], franka::kDefaultCutoffFrequency);
+        control_command.tau_J_d[5] = franka::lowpassFilter(config.kDeltaT, control_command.tau_J_d[5], robot_state.tau_J_d[5], franka::kDefaultCutoffFrequency);
+        control_command.tau_J_d[6] = franka::lowpassFilter(config.kDeltaT, control_command.tau_J_d[6], robot_state.tau_J_d[6], franka::kDefaultCutoffFrequency);
         
         
-        //rate limit the torque command
+        // 5. Rate limiting (this might be the most expensive part)
         control_command.tau_J_d = franka::limitRate(
             franka::kMaxTorqueRate,
             control_command.tau_J_d,
             robot_state.tau_J_d
         );
-
-        // Send command and update robot state
+        
+        // 6. Update robot state (this is likely the most expensive call)
         robot_state = update(&motion_command, &control_command);
         throwOnMotionError(robot_state, motion_id);
 
@@ -706,4 +759,15 @@ franka::Duration FRANKA::Implementation::getElapsedTime() {
 franka::RobotState FRANKA::Implementation::getRobotState() {
 
     return robot_state;
+}
+
+bool FRANKA::Implementation::getCartesianVelocity(RUT::Vector6d& velocity) {
+    try {
+        //read from the state without calling readOnce() to avoid latency
+        const auto& robot_state = this->robot_state;
+        velocity = Eigen::Map<const RUT::Vector6d>(robot_state.O_dP_EE_c.data());
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
