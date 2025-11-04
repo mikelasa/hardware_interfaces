@@ -33,6 +33,8 @@ PYBIND11_MODULE(manip_server_pybind, m)
                 py::arg("id") = 0)
         .def("get_wrench_timestamps_ms", &ManipServer::get_wrench_timestamps_ms,
                 py::arg("id") = 0)
+        .def("get_robot_wrench_timestamps_ms", &ManipServer::get_robot_wrench_timestamps_ms,
+                py::arg("id") = 0)
         .def("get_pose_timestamps_ms", &ManipServer::get_pose_timestamps_ms,
                 py::arg("id") = 0)
         .def("get_timestamp_now_ms", &ManipServer::get_timestamp_now_ms)

@@ -71,8 +71,6 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
   RUT::Profiler loop_profiler;
   std::cout << header << "Loop started." << std::endl;
 
-  std::cout << "[Robot thread] About to enter main while loop..." << std::endl;
-
   while (true) {
     std::cout << "[Robot thread] Main loop iteration - populating wrench buffer" << std::endl;
     
@@ -82,7 +80,6 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
       RUT::Vector6d dummy_wrench;
       dummy_wrench.setZero();
       _robot_wrench_buffers[id].put(dummy_wrench);
-      std::cout << "[Robot thread] Added wrench to buffer, size: " << _robot_wrench_buffers[id].size() << std::endl;
     }
     
     // ... rest of your loop

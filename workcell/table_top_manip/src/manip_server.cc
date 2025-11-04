@@ -74,7 +74,6 @@ bool ManipServer::initialize(const std::string& config_path) {
         }
         robot_ptrs.emplace_back(new FRANKA);
         FRANKA* franka_ptr = static_cast<FRANKA*>(robot_ptrs[id].get());
-        std::cout << "[DEBUG]franka_ptr: " << franka_ptr << std::endl;
         if (!franka_ptr->init(time0, robot_config)) {
           std::cerr << "Failed to initialize Franka for id " << id
                     << ". Exiting." << std::endl;
@@ -322,7 +321,7 @@ bool ManipServer::initialize(const std::string& config_path) {
   // each variable is saved using DataBuffer, which is a thread-safe circular buffer
   // the buffers are initialized with the appropriate sizes and names
   std::cout << "[ManipServer] Creating data buffers.\n";
-  int num_ft_sensors = 0;
+  int num_ft_sensors = 1;
   for (int id : _id_list) {
     if (_config.force_sensing_mode != ForceSensingMode::JOINT_SENSORS) {
       num_ft_sensors = force_sensor_ptrs[id]->getNumSensors();
@@ -502,15 +501,12 @@ bool ManipServer::initialize(const std::string& config_path) {
           std::lock_guard<std::mutex> lock(_ctrl_mtx);
           for (int id : _id_list) {
         if (_config.run_robot_thread && !_states_robot_thread_ready[id]) {
-          std::cout << "[DEBUG] Robot thread " << id << " not ready" << std::endl;
           all_ready = false;
         }
         if (_config.run_wrench_thread && !_states_wrench_thread_ready[id]) {
-          std::cout << "[DEBUG] Wrench thread " << id << " not ready" << std::endl;
           all_ready = false;
         }
         if (_config.run_rgb_thread && !_states_rgb_thread_ready[id]) {
-          std::cout << "[DEBUG] RGB thread " << id << " not ready" << std::endl;
           all_ready = false;
         }
       }
@@ -628,7 +624,9 @@ const Eigen::MatrixXd ManipServer::get_camera_rgb(int k, int id) {
 const Eigen::MatrixXd ManipServer::get_wrench(int k, int id) {
   std::lock_guard<std::mutex> lock(_wrench_buffer_mtxs[id]);
   _wrench_timestamps_ms[id] = _wrench_timestamp_ms_buffers[id].get_last_k(k);
-  return _wrench_buffers[id].get_last_k(k);
+  auto wrench_data = _wrench_buffers[id].get_last_k(k);
+
+  return wrench_data;
 }
 
 const Eigen::MatrixXd ManipServer::get_robot_wrench(int k, int id) {
