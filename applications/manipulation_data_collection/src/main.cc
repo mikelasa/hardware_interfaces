@@ -37,7 +37,7 @@ int main() {
       -  controller config
   */
   const std::string config_path =
-      "/home/robotlab/ACP/hardware_interfaces/workcell/"
+      "/home/mikel/ACP/hardware_interfaces/workcell/"
       "table_top_manip/"
       "config/single_arm_data_collection_franka.yaml";
 

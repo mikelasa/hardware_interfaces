@@ -7,8 +7,8 @@
 #include <RobotUtilities/spatial_utilities.h>
 #include <RobotUtilities/timer_linux.h>
 #include <ati_netft/ati_netft.h>
-#include <force_control/admittance_controller.h>
-#include <force_control/config_deserialize.h>
+#include <force_control_impedance/admittance_controller.h>
+#include <force_control_impedance/config_deserialize.h>
 #include <robotiq_ft_modbus/robotiq_ft_modbus.h>
 #include <ur_rtde/ur_rtde.h>
 

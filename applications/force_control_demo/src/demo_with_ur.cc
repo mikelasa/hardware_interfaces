@@ -1,7 +1,7 @@
 #include <RobotUtilities/spatial_utilities.h>
 #include <RobotUtilities/timer_linux.h>
-#include <force_control/admittance_controller.h>
-#include <force_control/config_deserialize.h>
+#include <force_control_impedance/admittance_controller.h>
+#include <force_control_impedance/config_deserialize.h>
 #include <unistd.h>
 #include <ur_rtde/ur_rtde.h>
 #include <yaml-cpp/yaml.h>

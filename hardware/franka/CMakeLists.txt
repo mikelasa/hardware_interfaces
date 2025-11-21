@@ -1,8 +1,8 @@
 include_directories(
   include/
-  /home/robotlab/ACP/libfranka-0.9.2/src/
-  /home/robotlab/ACP/libfranka-0.9.2/include/franka/
-  /home/robotlab/ACP/libfranka-0.9.2/common/include/
+  $ENV{HOME}/ACP/libfranka-0.9.2/src/
+  $ENV{HOME}/ACP/libfranka-0.9.2/include/franka/
+  $ENV{HOME}/ACP/libfranka-0.9.2/common/include/
   /usr/include/eigen3
 )
 

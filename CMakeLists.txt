@@ -2,6 +2,16 @@ cmake_minimum_required(VERSION 3.5)
 #######################
 project(hardware_interfaces)
 
+include_directories(
+  include/
+  $ENV{HOME}/ACP/libfranka-0.9.2/src/
+  $ENV{HOME}/ACP/libfranka-0.9.2/include/franka/
+  $ENV{HOME}/ACP/libfranka-0.9.2/common/include/
+  /usr/include/eigen3
+  $ENV{HOME}/.local/include
+  ${CMAKE_INSTALL_PREFIX}/include
+)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED On)
 set(CMAKE_CXX_EXTENSIONS Off)
