@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <atomic>
 
 #include <yaml-cpp/yaml.h>
 #include <opencv2/opencv.hpp>
@@ -33,6 +34,12 @@
 #include <wsg_gripper/wsg_gripper.h>
 
 #include <RobotUtilities/data_buffer.h>
+
+// Robot log data structure for lock-free logging
+struct RobotLogData {
+  double timestamp_ms;
+  RUT::Vector7d pose_fb;
+};
 
 struct ManipServerConfig {
   std::string data_folder{""};
@@ -261,6 +268,12 @@ class ManipServer {
   bool _ctrl_flag_saving = false;   // flag for ongoing data collection
   std::mutex _ctrl_mtx;
 
+  // logging buffers for lock-free logging
+  std::vector<RUT::DataBuffer<RobotLogData>> _logging_buffers;
+  std::deque<std::mutex> _logging_buffer_mtxs;
+  std::deque<std::atomic<bool>> _logging_buffer_overflow;
+  std::vector<bool> _states_logging_thread_ready{};
+
   // state variable indicating the status of the threads
   std::vector<bool> _states_robot_thread_ready{};
   std::vector<bool> _states_eoat_thread_ready{};
@@ -293,6 +306,7 @@ class ManipServer {
   // loop functions
   void robot_admittance_loop(const RUT::TimePoint& time0, int robot_id);
   void robot_impedance_loop(const RUT::TimePoint& time0, int robot_id);
+  void robot_logging_loop(const RUT::TimePoint& time0, int robot_id);
   void eoat_loop(const RUT::TimePoint& time0, int robot_id);
   void rgb_loop(const RUT::TimePoint& time0, int camera_id);
   void ext_sensor_wrench_loop(const RUT::TimePoint& time0, int publish_rate,

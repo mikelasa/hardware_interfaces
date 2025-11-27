@@ -1,7 +1,7 @@
 franka:
   robot_ip: "172.17.6.164"
   log_size: 50
-  tcp_mass: 0.3
+  tcp_mass: 0.4
   fx_c_load: [0.0, 0.0, 0.0]
   tcp_inertia: [0.1, 0.0, 0.0,
                 0.0, 0.1, 0.0,
@@ -9,7 +9,7 @@ franka:
   deviation: [10.0, 3.12, 6.283185307179586]
   kDeltaT: 1e-3
   CutoffFrequency: 100
-  realtime_config: "ignore" # ignore or enforce
+  realtime_config: "enforce" # ignore or enforce
   controller_mode: "external_controller" # "joint_impedance" or "cartesian_impedance" or "external_controller"
   motion_generator_mode: "joint_velocity" # "joint_position" or "joint_velocity" or "cartesian_position" or "cartesian_velocity"
   setJointImpedance: [3000, 3000, 3000, 2500, 2500, 2000, 2000]

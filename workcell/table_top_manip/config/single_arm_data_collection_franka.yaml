@@ -7,7 +7,7 @@
 #    damping: low damping
 #    max_spring_force_magnitude: 15
 # always check the first few parameters:
-data_folder: "/home/robotlab/ACP/data/real/wipe_single_arm/"  # folder to save data
+data_folder: "/home/robotlab/data/real/draw_single_arm"  # folder to save data
 mock_hardware: false
 bimanual: false
 
@@ -15,11 +15,11 @@ run_robot_thread: true
 run_wrench_thread: true
 run_rgb_thread: true
 run_eoat_thread: false  
-plot_rgb: true
+plot_rgb: false
 
 rgb_buffer_size: 11
 robot_buffer_size: 600
-wrench_buffer_size: 8000
+wrench_buffer_size: 1000
 eoat_buffer_size: 600
 robot_selection: "FRANKA"  # "UR_RTDE" or "FRANKA"
 camera_selection: "REALSENSE"
@@ -43,7 +43,7 @@ franka0:
   deviation: [10.0, 3.12, 6.283185307179586]
   kDeltaT: 1e-3
   CutoffFrequency: 100
-  realtime_config: "ignore" # ignore or enforce
+  realtime_config: "enforce" # ignore or enforce
   controller_mode: "external_controller" # "joint_impedance" or "cartesian_impedance" or "external_controller"
   motion_generator_mode: "joint_velocity" # "joint_position" or "joint_velocity" or "cartesian_position" or "cartesian_velocity"
   setJointImpedance: [3000, 3000, 3000, 2500, 2500, 2000, 2000]
@@ -74,7 +74,7 @@ realsense0:
 impedance_controller0:
   dt: 0.001
   log_to_file: false
-  log_file_path: "/home/robotlab/ACP/data/controller_log/impedance_controller.log"
+  log_file_path: "/home/data/controller_log/impedance_controller.log"
   alert_overrun: false
   compliance6d:
     stiffness: [0, 0, 0, 0, 0 ,0] #[100, 100, 100, 10, 10, 10]

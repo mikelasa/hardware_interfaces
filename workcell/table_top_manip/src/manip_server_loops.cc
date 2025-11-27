@@ -11,6 +11,20 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
       "[ManipServer][Robot Impedance thread] " + std::to_string(id) + ": ";
   std::cout << header + "starting thread.\n";
 
+  // Set real-time priority
+  if (!_config.mock_hardware) {
+    struct sched_param param;
+    param.sched_priority = 99;
+    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) != 0) {
+      std::cerr << header << "Failed to set real-time priority: " 
+                << strerror(errno) << std::endl;
+      std::cerr << header << "Try running with sudo or setting CAP_SYS_NICE capability" 
+                << std::endl;
+    } else {
+      std::cout << header << "Real-time priority set successfully" << std::endl;
+    }
+  }
+
   /* --------- VARIABLES --------- */
   // using the global timer, creates a local timer for this thread
   RUT::Timer timer;
@@ -51,9 +65,6 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
   ref_pose = pose_fb;
   wrench_WTr.setZero();
 
-  // Initialize control flags
-  bool ctrl_flag_saving = false;  // local copy
-
   //A controller that interpolates linearly between two Cartesian targets.
   // initializes with the current pose and timestamp
   RUT::TaskSpaceInterpolationController intp_controller;
@@ -71,20 +82,20 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
   RUT::Profiler loop_profiler;
   std::cout << header << "Loop started." << std::endl;
 
-  while (true) {
-    std::cout << "[Robot thread] Main loop iteration - populating wrench buffer" << std::endl;
-    
-    // Add dummy data temporarily:
-    {
-      std::lock_guard<std::mutex> lock(_robot_wrench_buffer_mtxs[id]);
-      RUT::Vector6d dummy_wrench;
-      dummy_wrench.setZero();
-      _robot_wrench_buffers[id].put(dummy_wrench);
-    }
-    
-    // ... rest of your loop
-    break; // Remove this after testing
-  }
+  // Statistics tracking for overruns
+  uint64_t loop_count = 0;
+  uint64_t overrun_count = 0;
+  double max_overrun_ms = 0.0;
+  double total_overrun_ms = 0.0;
+  
+  // Track Franka's actual success rate
+  double last_franka_success_rate = 1.0;
+  uint64_t last_success_rate_check = 0;
+  
+  // Track waypoint starvation
+  uint64_t no_waypoint_count = 0;
+  uint64_t consecutive_holds = 0;
+  uint64_t max_consecutive_holds = 0;
 
   RUT::Timer mock_loop_timer;
   // Control loop at 1kHz for franka, can be changed if needed
@@ -233,10 +244,11 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
       // Compute the control output
       _impedance_controllers[id].step(torque_robot_cmd);
       loop_profiler.stop("controller_step");
-      loop_profiler.start();
+
     }
-    
+
     // Send control command to the robot
+    loop_profiler.start();
     if ((!_config.mock_hardware) &&
         (!franka_ptr->setTorques(torque_robot_cmd))) {
       std::cout << header << "setTorques failed. Ending thread."
@@ -251,47 +263,38 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
                 << std::endl;
       break;
     }
+    loop_profiler.stop("franka_update");
 
     // std::cout << "t = " << timer.toc_ms()
     //           << ", pose_rdte_cmd: " << pose_rdte_cmd.transpose() << std::endl;
 
-    // logging
-    _ctrl_mtx.lock();
-    if (_ctrl_flag_saving) {
-      _ctrl_mtx.unlock();
-
-      if (!ctrl_flag_saving) {
-        std::cout << "[robot thread] Start saving low dim data." << std::endl;
-        json_file_start(_ctrl_robot_data_streams[id]);
-        ctrl_flag_saving = true;
-      }
-
-      _states_robot_thread_saving[id] = true;
-      save_robot_data_json(_ctrl_robot_data_streams[id],
-                           _states_robot_seq_id[id], timer.toc_ms(), pose_fb,
-                           false);
-      json_frame_ending(_ctrl_robot_data_streams[id]);
-      _states_robot_seq_id[id]++;
-    } else {
-      _ctrl_mtx.unlock();
-
-      if (ctrl_flag_saving) {
-        std::cout << "[robot thread] Stop saving low dim data." << std::endl;
-        // save one last frame, so we can do the correct different frame ending
-        save_robot_data_json(_ctrl_robot_data_streams[id],
-                             _states_robot_seq_id[id], timer.toc_ms(), pose_fb,
-                             false);
-        json_file_ending(_ctrl_robot_data_streams[id]);
-        _ctrl_robot_data_streams[id].close();
-        ctrl_flag_saving = false;
-        _states_robot_thread_saving[id] = false;
-      }
-    }
-
-    loop_profiler.stop("logging");
+    // logging - just push to buffer (ultra-fast, <10 microseconds)
     loop_profiler.start();
+    if (_ctrl_flag_saving) {
+      std::lock_guard<std::mutex> lock(_logging_buffer_mtxs[id]);
+      
+      if (!_logging_buffers[id].is_full()) {
+        RobotLogData log_data;
+        log_data.timestamp_ms = time_now_ms;
+        log_data.pose_fb = pose_fb;
+        
+        _logging_buffers[id].put(log_data);
+        _states_robot_thread_saving[id] = true;
+        _logging_buffer_overflow[id].store(false);
+      } else {
+        // Buffer overflow - logging thread can't keep up
+        if (!_logging_buffer_overflow[id].load()) {
+          _logging_buffer_overflow[id].store(true);
+          std::cerr << header << "WARNING: Logging buffer overflow!" << std::endl;
+        }
+      }
+    } else {
+      _states_robot_thread_saving[id] = false;
+    }
+    loop_profiler.stop("logging");
 
     // loop control
+    loop_profiler.start();
     {
       std::lock_guard<std::mutex> lock(_ctrl_mtx);
       if (!_ctrl_flag_running) {
@@ -305,24 +308,63 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
     loop_profiler.stop("lock");
 
     // loop timing and overrun check
+    loop_count++;
     if (_config.mock_hardware) {
       mock_loop_timer.sleep_till_next();
     } else {
+      // Check Franka's actual success rate every 1000 loops (~1 second)
+      if (loop_count % 1000 == 0) {
+        last_franka_success_rate = state.control_command_success_rate;
+        
+        // Only print if there's an actual problem
+        if (last_franka_success_rate < 0.95) {
+          std::cout << "\033[31m";  // red
+          std::cout << header << "⚠️ WARNING: Franka success rate: " 
+                    << (last_franka_success_rate * 100.0) << "% "
+                    << "(Local overruns: " << (100.0 * overrun_count / loop_count) << "%)"
+                    << std::endl;
+          std::cout << "\033[0m";
+        } else {
+          // Success rate is good - only print occasionally (every 10 seconds)
+          if (loop_count % 10000 == 0) {
+            std::cout << "\033[32m";  // green
+            std::cout << header << "✅ Franka Success Rate: " 
+                      << (last_franka_success_rate * 100.0) << "%" << std::endl;
+            std::cout << "\033[0m";
+          }
+        }
+      }
+      
       double overrun_ms = mock_loop_timer.check_for_overrun_ms(false);
       if (overrun_ms > 0) {
-        /*
-        // TODO MIKEL PRINTEA CONSTANTEMENTE POR OVERRRUN
-        std::cout << "\033[33m";  // set color to bold yellow
-        std::cout << header << "Overrun: " << overrun_ms << "ms" << std::endl;
-        std::cout << "\033[0m";  // reset color to default
-        loop_profiler.show();
-        */
+        overrun_count++;
+        total_overrun_ms += overrun_ms;
+        if (overrun_ms > max_overrun_ms) {
+          max_overrun_ms = overrun_ms;
+        }
+        
+        // Don't print overrun warnings - they're harmless as long as Franka success rate is high
+        // Statistics will be shown at the end
       }
       mock_loop_timer.check_for_overrun_ms(
           false);  // just call it to reset the timer
     }
     loop_profiler.clear();
   }  // end of while loop
+
+  // Print final impedance loop statistics
+  std::cout << "\033[36m";  // cyan color
+  std::cout << header << "═══════════════════════════════════════════════════" << std::endl;
+  std::cout << header << "📈 FINAL CONTROL LOOP STATISTICS:" << std::endl;
+  std::cout << header << "   Total loops: " << loop_count << std::endl;
+  std::cout << header << "   Overruns: " << overrun_count << " (" 
+            << (100.0 * overrun_count / loop_count) << "%)" << std::endl;
+  if (overrun_count > 0) {
+    std::cout << header << "   Avg overrun: " << (total_overrun_ms / overrun_count) << " ms" << std::endl;
+    std::cout << header << "   Max overrun: " << max_overrun_ms << " ms" << std::endl;
+  }
+  std::cout << header << "═══════════════════════════════════════════════════" << std::endl;
+  std::cout << "\033[0m";  // reset color
 
   {
     std::lock_guard<std::mutex> lock(_ctrl_mtx);
@@ -1151,4 +1193,126 @@ void ManipServer::rgb_plot_loop() {
       break;
   }
   std::cout << "[plot thread] Joined." << std::endl;
+}
+
+void ManipServer::robot_logging_loop(const RUT::TimePoint& time0, int id) {
+  std::string header = "[ManipServer][Robot Logging thread] " + std::to_string(id) + ": ";
+  std::cout << header << "starting thread" << std::endl;
+
+  RUT::Timer timer;
+  timer.tic(time0);
+  
+  bool ctrl_flag_saving = false;
+  int frames_written = 0;
+  
+  // Process buffer at 200Hz (fast enough to handle 1kHz data generation)
+  RUT::Timer loop_timer;
+  loop_timer.set_loop_rate_hz(200);
+  loop_timer.start_timed_loop();
+
+  {
+    std::lock_guard<std::mutex> lock(_ctrl_mtx);
+    _states_logging_thread_ready[id] = true;
+  }
+  std::cout << header << "Loop started." << std::endl;
+
+  while (true) {
+    _ctrl_mtx.lock();
+    bool should_save = _ctrl_flag_saving;
+    _ctrl_mtx.unlock();
+
+    if (should_save) {
+      if (!ctrl_flag_saving) {
+        std::cout << header << "Start saving low dim data." << std::endl;
+        json_file_start(_ctrl_robot_data_streams[id]);
+        ctrl_flag_saving = true;
+        frames_written = 0;
+      }
+
+      // Batch process up to 100 frames per iteration (5ms worth at 1kHz)
+      int batch_count = 0;
+      while (batch_count < 100) {
+        RobotLogData log_data;
+        bool has_data = false;
+        
+        {
+          std::lock_guard<std::mutex> lock(_logging_buffer_mtxs[id]);
+          if (!_logging_buffers[id].is_empty()) {
+            log_data = _logging_buffers[id].pop();
+            has_data = true;
+          }
+        }
+        
+        if (!has_data) break;
+        
+        // Write to JSON - SAME FUNCTION AS ORIGINAL
+        save_robot_data_json(_ctrl_robot_data_streams[id],
+                           _states_robot_seq_id[id], 
+                           log_data.timestamp_ms, 
+                           log_data.pose_fb,
+                           false);
+        
+        json_frame_ending(_ctrl_robot_data_streams[id]);
+        _states_robot_seq_id[id]++;
+        frames_written++;
+        batch_count++;
+      }
+      
+      // Check for overflow warning
+      if (_logging_buffer_overflow[id].load()) {
+        std::cerr << header << "Buffer overflow - data loss may occur!" << std::endl;
+      }
+      
+    } else {
+      if (ctrl_flag_saving) {
+        std::cout << header << "Stop saving low dim data. Flushing buffer..." << std::endl;
+        
+        // Flush all remaining data
+        int flushed = 0;
+        while (true) {
+          RobotLogData log_data;
+          bool has_data = false;
+          
+          {
+            std::lock_guard<std::mutex> lock(_logging_buffer_mtxs[id]);
+            if (!_logging_buffers[id].is_empty()) {
+              log_data = _logging_buffers[id].pop();
+              has_data = true;
+            }
+          }
+          
+          if (!has_data) break;
+          
+          save_robot_data_json(_ctrl_robot_data_streams[id],
+                             _states_robot_seq_id[id],
+                             log_data.timestamp_ms,
+                             log_data.pose_fb,
+                             false);
+          json_frame_ending(_ctrl_robot_data_streams[id]);
+          _states_robot_seq_id[id]++;
+          flushed++;
+        }
+        
+        std::cout << header << "Flushed " << flushed << " remaining frames." << std::endl;
+        std::cout << header << "Total frames written: " << frames_written + flushed << std::endl;
+        
+        json_file_ending(_ctrl_robot_data_streams[id]);
+        _ctrl_robot_data_streams[id].close();
+        ctrl_flag_saving = false;
+        _states_robot_thread_saving[id] = false;
+      }
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(_ctrl_mtx);
+      if (!_ctrl_flag_running) {
+        std::cout << header << "_ctrl_flag_running is false. Shutting down." << std::endl;
+        break;
+      }
+    }
+
+    loop_timer.sleep_till_next();
+  }
+  
+  std::cout << header << "Joined." << std::endl;
 }

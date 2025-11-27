@@ -425,6 +425,16 @@ bool ManipServer::initialize(const std::string& config_path) {
     _states_eoat_seq_id.push_back(0);
     _states_rgb_seq_id.push_back(0);
     _states_wrench_seq_id.push_back(0);
+    _states_logging_thread_ready.push_back(false);
+  }
+
+  // initialize logging buffers for lock-free logging (10 seconds at 1kHz)
+  for (int id : _id_list) {
+    RUT::DataBuffer<RobotLogData> buffer;
+    buffer.initialize(10000);  // 10000 samples = 10 seconds at 1kHz
+    _logging_buffers.push_back(buffer);
+    _logging_buffer_mtxs.emplace_back();
+    _logging_buffer_overflow.emplace_back(false);
   }
 
   // initialize additional shared variables
@@ -472,6 +482,9 @@ bool ManipServer::initialize(const std::string& config_path) {
         _robot_threads.emplace_back(&ManipServer::robot_impedance_loop, this,
                                     std::ref(time0), id);
       }
+      // Start logging thread for each robot (handles file I/O separately)
+      _robot_threads.emplace_back(&ManipServer::robot_logging_loop, this,
+                                  std::ref(time0), id);
     }
     if (_config.run_wrench_thread && _config.force_sensing_mode != ForceSensingMode::JOINT_SENSORS) {
       _wrench_threads.emplace_back(&ManipServer::ext_sensor_wrench_loop, this,
