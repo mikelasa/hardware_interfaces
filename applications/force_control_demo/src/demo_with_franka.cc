@@ -132,6 +132,9 @@ int main() {
     // Fixed pose for testing (same as initial pose)
     RUT::Vector7d test_pose = pose_ref;
 
+    //wrench reference 5N in z direction
+    wrench_WTr[2] = 100;
+
     try {
         
         // ========== Control Loop Setup ==========
@@ -148,16 +151,16 @@ int main() {
             timer.sleep_till_next();                         // Sleep until next control cycle
             
             // ========== State Updates ==========
+
+            // Get jacobian and velocity from current robot state
+            state = robot.getRobotState();
+            jacobian_array = model.zeroJacobian(franka::Frame::kEndEffector, state);
             
             /* UPDATE VALUES */
             // We can't use getCartesian and getWrenchTool because we would be polling the robot twice per loop
             // Instead we use getCurrentWrenchTool to just update wrench values with the getCurrentPose call
             robot.getCurrentPose(pose);
             robot.getCurrentWrenchTool(wrench);
-
-            // Get jacobian and velocity from current robot state
-            state = robot.getRobotState();
-            jacobian_array = model.zeroJacobian(franka::Frame::kEndEffector, state);
 
             // ========== Controller Updates ==========
             
@@ -168,7 +171,7 @@ int main() {
             // Updates internal state with current pose and measured wrench
             controller.setRobotStatus(pose, wrench);
 
-            // Update robot reference (maintain fixed pose with zero force)
+            // Update robot reference (wrench reference is zero, since impedance does not track forces)
             controller.setRobotReference(test_pose, wrench_WTr);
 
             // ========== Control Computation ==========

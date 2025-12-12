@@ -39,6 +39,7 @@ target_link_libraries(ManipServer
   COIN_FT
   HI_COMMON
   FRANKA
+  SPACEMOUSE
   Franka::Franka
   ${RUT}
   ${FORCE_CONTROLLERS}

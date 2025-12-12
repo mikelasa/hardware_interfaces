@@ -776,3 +776,4 @@ franka::Duration FRANKA::Implementation::getElapsedTime() {
 franka::RobotState FRANKA::Implementation::getRobotState() {
     return robot_state;
 }
+

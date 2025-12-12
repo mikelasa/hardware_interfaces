@@ -26,6 +26,8 @@ find_package(Boost REQUIRED COMPONENTS
 find_library(YAMLLib yaml-cpp HINTS /usr/local/lib)
 find_library(RUT Utilities HINTS ${CMAKE_INSTALL_PREFIX}/lib/RobotUtilities)
 find_library(FORCE_CONTROLLERS FORCE_CONTROLLERS HINTS ${CMAKE_INSTALL_PREFIX}/lib/)
+find_library(HIDAPI_LIBRARIES hidapi HINTS /usr/lib /usr/local/lib)
+find_path(HIDAPI_INCLUDE_DIRS hidapi.h HINTS /usr/include /usr/local/include)
 
 include_directories(
   include/
@@ -44,6 +46,7 @@ add_subdirectory(hardware/robotiq_ft_modbus)
 add_subdirectory(hardware/ur_rtde)
 add_subdirectory(hardware/wsg_gripper)
 add_subdirectory(hardware/franka)
+add_subdirectory(hardware/spacemouse)
 
 # workcell to build
 # include every "include" directory under /hardware/*

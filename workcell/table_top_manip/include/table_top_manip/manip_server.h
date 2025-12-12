@@ -32,6 +32,7 @@
 #include <ur_rtde/ur_rtde.h>
 #include <franka/franka.h>
 #include <wsg_gripper/wsg_gripper.h>
+#include <spacemouse/spacemouse.h>
 
 #include <RobotUtilities/data_buffer.h>
 
@@ -39,6 +40,10 @@
 struct RobotLogData {
   double timestamp_ms;
   RUT::Vector7d pose_fb;
+  RUT::Vector7d tau_J;
+  RUT::Vector7d q;        // joint positions
+  RUT::Vector7d dq;       // joint velocities
+  RUT::Vector7d ddq;      // joint accelerations
 };
 
 struct ManipServerConfig {
@@ -48,6 +53,7 @@ struct ManipServerConfig {
   bool run_wrench_thread{false};
   bool run_rgb_thread{false};
   bool plot_rgb{false};
+  bool teleop{false};
   int rgb_buffer_size{5};
   int robot_buffer_size{100};
   int eoat_buffer_size{100};
@@ -70,6 +76,7 @@ struct ManipServerConfig {
       run_wrench_thread = node["run_wrench_thread"].as<bool>();
       run_rgb_thread = node["run_rgb_thread"].as<bool>();
       plot_rgb = node["plot_rgb"].as<bool>();
+      if (node["teleop"]) teleop = node["teleop"].as<bool>();
       rgb_buffer_size = node["rgb_buffer_size"].as<int>();
       robot_buffer_size = node["robot_buffer_size"].as<int>();
       eoat_buffer_size = node["eoat_buffer_size"].as<int>();
@@ -246,6 +253,10 @@ class ManipServer {
   std::vector<std::shared_ptr<FTInterfaces>> force_sensor_ptrs;
   std::vector<std::shared_ptr<RobotInterfaces>> robot_ptrs;
   std::vector<std::shared_ptr<JSInterfaces>> eoat_ptrs;
+  std::vector<std::shared_ptr<SpaceMouse>> spacemouse_ptrs;
+  // Teleoperation scaling per robot id (from YAML spacemouse{id})
+  std::vector<double> _teleop_translation_scales;
+  std::vector<double> _teleop_rotation_scales;
 
   // controllers
   std::vector<AdmittanceController> _admittance_controllers;
@@ -257,6 +268,7 @@ class ManipServer {
   std::vector<std::thread> _eoat_threads;
   std::vector<std::thread> _wrench_threads;
   std::vector<std::thread> _rgb_threads;
+  std::vector<std::thread> _teleop_threads;
   std::thread _rgb_plot_thread;
 
   // control variables to control the threads
@@ -264,6 +276,8 @@ class ManipServer {
   std::vector<std::ofstream> _ctrl_robot_data_streams;
   std::vector<std::ofstream> _ctrl_eoat_data_streams;
   std::vector<std::ofstream> _ctrl_wrench_data_streams;
+  std::vector<std::ofstream> _ctrl_torque_data_streams;
+  std::vector<std::ofstream> _ctrl_joint_data_streams;
   bool _ctrl_flag_running = false;  // flag to terminate the program
   bool _ctrl_flag_saving = false;   // flag for ongoing data collection
   std::mutex _ctrl_mtx;
@@ -308,6 +322,7 @@ class ManipServer {
   void robot_impedance_loop(const RUT::TimePoint& time0, int robot_id);
   void robot_logging_loop(const RUT::TimePoint& time0, int robot_id);
   void eoat_loop(const RUT::TimePoint& time0, int robot_id);
+  void teleop_loop(const RUT::TimePoint& time0, int robot_id);
   void rgb_loop(const RUT::TimePoint& time0, int camera_id);
   void ext_sensor_wrench_loop(const RUT::TimePoint& time0, int publish_rate,
                    int sensor_id);

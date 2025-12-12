@@ -317,6 +317,37 @@ bool ManipServer::initialize(const std::string& config_path) {
     }
   }
 
+  // Initialize SpaceMouse devices for teleoperation if enabled
+  std::cout << "[ManipServer] Initializing teleoperation devices.\n";
+  if (_config.teleop) {
+    for (int id : _id_list) {
+      SpaceMouse::SpaceMouseConfig sm_config;
+      try {
+        sm_config.deserialize(config["spacemouse" + std::to_string(id)]);
+      } catch (const std::exception& e) {
+        std::cerr << "Warning: Failed to load SpaceMouse config for id " << id
+                  << ": " << e.what() << std::endl;
+        std::cerr << "Teleoperation will be disabled for this robot." << std::endl;
+        _config.teleop = false;
+        continue;
+      }
+      
+      spacemouse_ptrs.emplace_back(new SpaceMouse);
+      SpaceMouse* sm_ptr = spacemouse_ptrs[id].get();
+      if (!sm_ptr->init(sm_config)) {
+        std::cerr << "Warning: Failed to initialize SpaceMouse for id " << id << std::endl;
+        std::cerr << "Teleoperation will be disabled for this robot." << std::endl;
+        _config.teleop = false;
+      } else {
+        std::cout << "[ManipServer] SpaceMouse " << id << " initialized: "
+                  << sm_ptr->get_device_info() << std::endl;
+        // Store teleop scaling from YAML
+        _teleop_translation_scales.push_back(sm_config.translation_scale);
+        _teleop_rotation_scales.push_back(sm_config.rotation_scale);
+      }
+    }
+  }
+
   // create the data buffers
   // each variable is saved using DataBuffer, which is a thread-safe circular buffer
   // the buffers are initialized with the appropriate sizes and names
@@ -443,6 +474,8 @@ bool ManipServer::initialize(const std::string& config_path) {
     _ctrl_robot_data_streams.push_back(std::ofstream());
     _ctrl_eoat_data_streams.push_back(std::ofstream());
     _ctrl_wrench_data_streams.push_back(std::ofstream());
+    _ctrl_torque_data_streams.push_back(std::ofstream());
+    _ctrl_joint_data_streams.push_back(std::ofstream());
     _color_mats.push_back(cv::Mat());
     _color_mat_mtxs.emplace_back();
     _poses_fb.push_back(Eigen::VectorXd());
@@ -498,6 +531,10 @@ bool ManipServer::initialize(const std::string& config_path) {
     if (_config.run_eoat_thread) {
       _eoat_threads.emplace_back(&ManipServer::eoat_loop, this, std::ref(time0),
                                  id);
+    }
+    if (_config.teleop && spacemouse_ptrs.size() > id && spacemouse_ptrs[id]) {
+      _teleop_threads.emplace_back(&ManipServer::teleop_loop, this, std::ref(time0),
+                                   id);
     }
   }
   if (_config.plot_rgb) {
@@ -570,6 +607,19 @@ void ManipServer::join_threads() {
               << std::endl;
     for (auto& eoat_thread : _eoat_threads) {
       eoat_thread.join();
+    }
+  }
+  if (_config.teleop) {
+    std::cout << "[ManipServer]: Waiting for teleop threads to join."
+              << std::endl;
+    for (auto& teleop_thread : _teleop_threads) {
+      teleop_thread.join();
+    }
+    // Cleanup SpaceMouse devices
+    for (auto& sm_ptr : spacemouse_ptrs) {
+      if (sm_ptr) {
+        sm_ptr->cleanup();
+      }
     }
   }
   if (_config.plot_rgb) {
@@ -1066,9 +1116,12 @@ void ManipServer::start_saving_data_for_a_new_episode() {
   // create episode folders
   std::vector<std::string> robot_json_file_names;
   std::vector<std::string> wrench_json_file_names;
+  std::vector<std::string> torque_json_file_names;
+  std::vector<std::string> joint_json_file_names;
   create_folder_for_new_episode(_config.data_folder, _id_list,
                                 _ctrl_rgb_folders, robot_json_file_names,
-                                wrench_json_file_names);
+                                wrench_json_file_names, torque_json_file_names,
+                                joint_json_file_names);
 
   std::cout << "[main] New episode. rgb_folder_name: " << _ctrl_rgb_folders[0]
             << std::endl;
@@ -1077,6 +1130,8 @@ void ManipServer::start_saving_data_for_a_new_episode() {
   for (int id : _id_list) {
     _ctrl_robot_data_streams[id].open(robot_json_file_names[id]);
     _ctrl_wrench_data_streams[id].open(wrench_json_file_names[id]);
+    _ctrl_torque_data_streams[id].open(torque_json_file_names[id]);
+    _ctrl_joint_data_streams[id].open(joint_json_file_names[id]);
   }
 
   {

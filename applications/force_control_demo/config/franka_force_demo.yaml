@@ -32,11 +32,11 @@ franka:
 impedance_controller:
   dt: 0.001
   log_to_file: false
-  log_file_path: "/home/robotlab/ACP/hardware_interfaces/applications/force_control_demo/src/impedance_controller.log"
+  log_file_path: "/home/robotlab/data/impedance_controller_mover_100k.log"
   alert_overrun: false
   compliance6d:
     stiffness: [0, 0, 0, 0, 0, 0]
-    damping: [0, 0, 0, 0, 0, 0] # applying critical damping: D = 2*sqrt(K*m)
+    damping: [5, 5, 5, 1, 1, 1] # applying critical damping: D = 2*sqrt(K*m)
     nullspace_stiffness: [0, 0, 0, 0, 0, 0, 0]
     nullspace_damping: [0, 0, 0, 0, 0, 0, 0] 
     stiction: [0, 0, 0, 0, 0, 0] #stationary friction model

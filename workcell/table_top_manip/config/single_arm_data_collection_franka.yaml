@@ -7,19 +7,21 @@
 #    damping: low damping
 #    max_spring_force_magnitude: 15
 # always check the first few parameters:
-data_folder: "/home/robotlab/data/real/draw_single_arm"  # folder to save data
+data_folder: "/home/robotlab/data/real/test_3"  # folder to save data
 mock_hardware: false
 bimanual: false
+
 
 run_robot_thread: true
 run_wrench_thread: true
 run_rgb_thread: true
-run_eoat_thread: false  
+run_eoat_thread: false
+teleop: True 
 plot_rgb: false
 
 rgb_buffer_size: 11
-robot_buffer_size: 600
-wrench_buffer_size: 1000
+robot_buffer_size: 1200 #duplicado ya que los datos se leen el doble de rapido.
+wrench_buffer_size: 1200 # reducido porquu la velocidad es de 1Khz 
 eoat_buffer_size: 600
 robot_selection: "FRANKA"  # "UR_RTDE" or "FRANKA"
 camera_selection: "REALSENSE"
@@ -36,7 +38,7 @@ franka0:
   robot_ip: "172.17.6.164"
   log_size: 50
   tcp_mass: 0.4
-  fx_c_load: [0.0, 0.0, 0.0]
+  fx_c_load: [0.0, 0.0, 0.03]
   tcp_inertia: [0.1, 0.0, 0.0,
                 0.0, 0.1, 0.0,
                 0.0, 0.0, 0.1]
@@ -77,8 +79,19 @@ impedance_controller0:
   log_file_path: "/home/data/controller_log/impedance_controller.log"
   alert_overrun: false
   compliance6d:
-    stiffness: [0, 0, 0, 0, 0 ,0] #[100, 100, 100, 10, 10, 10]
-    damping: [0, 0, 0, 0, 0 ,0] # applying critical damping: D = 2*sqrt(K*m)
+    stiffness: [20, 20, 20, 20, 20, 20]
+    damping: [2, 2, 2, 2, 2 ,2] # applying critical damping: D = 2*sqrt(K*m)
     nullspace_stiffness: [0, 0, 0, 0, 0, 0, 0]
-    nullspace_damping: [0, 0, 0, 0, 0, 0, 0] 
+    nullspace_damping: [0, 0, 0, 0, 0, 0, 0]
     stiction: [0, 0, 0, 0, 0, 0] #stationary friction model
+
+spacemouse0:
+  vendor_id: 0x256f
+  product_id: 0xc635
+  device_index: 0
+  translation_scale: 1.0
+  rotation_scale: 0.5
+  dead_zone: 0.05
+  enable_filtering: true
+  filter_alpha: 0.3
+  update_rate_hz: 1000

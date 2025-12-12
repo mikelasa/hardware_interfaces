@@ -19,7 +19,9 @@ inline void create_folder_for_new_episode(
     const std::string& data_folder, std::vector<int> id_list,
     std::vector<std::string>& rgb_folders,
     std::vector<std::string>& robot_json_files,
-    std::vector<std::string>& wrench_json_files) {
+    std::vector<std::string>& wrench_json_files,
+    std::vector<std::string>& torque_json_files,
+    std::vector<std::string>& joint_json_files) {
   std::cout << "[create_folder_for_new_episode] Creating folder for new episode"
             << std::endl;
   int timestamp = std::chrono::seconds(std::time(NULL)).count();
@@ -36,6 +38,8 @@ inline void create_folder_for_new_episode(
   rgb_folders.clear();
   robot_json_files.clear();
   wrench_json_files.clear();
+  torque_json_files.clear();
+  joint_json_files.clear();
   for (int id : id_list) {
     std::string rgb_folder = episode_folder + "/rgb_" + std::to_string(id);
     fs::create_directory(rgb_folder);
@@ -43,15 +47,25 @@ inline void create_folder_for_new_episode(
         episode_folder + "/robot_data_" + std::to_string(id) + ".json";
     std::string wrench_json_file =
         episode_folder + "/wrench_data_" + std::to_string(id) + ".json";
+    std::string torque_json_file =
+        episode_folder + "/torque_data_" + std::to_string(id) + ".json";
+    std::string joint_json_file =
+        episode_folder + "/joint_data_" + std::to_string(id) + ".json";
     rgb_folders.push_back(rgb_folder);
     robot_json_files.push_back(robot_json_file);
     wrench_json_files.push_back(wrench_json_file);
+    torque_json_files.push_back(torque_json_file);
+    joint_json_files.push_back(joint_json_file);
     std::cout << "[create_folder_for_new_episode] Created rgb folder: "
               << rgb_folder << std::endl;
     std::cout << "[create_folder_for_new_episode] generated robot file: "
               << robot_json_file << std::endl;
     std::cout << "[create_folder_for_new_episode] generated wrench file: "
               << wrench_json_file << std::endl;
+    std::cout << "[create_folder_for_new_episode] generated torque file: "
+              << torque_json_file << std::endl;
+    std::cout << "[create_folder_for_new_episode] generated joint file: "
+              << joint_json_file << std::endl;
   }
 }
 
@@ -67,6 +81,82 @@ inline bool save_robot_data_json(std::ostream& os, int seq_id,
      << timestamp_ms << ",\n";
   os << std::fixed << std::setprecision(7);
   os << "\t\t\"ts_pose_fb\": [" << pose.format(good_looking_fmt) << "],\n";
+  return true;
+}
+
+inline bool save_robot_data_json(std::ostream& os, int seq_id,
+                                 double timestamp_ms, const RUT::Vector7d& pose,
+                                 const RUT::Vector7d& tau_J, bool mask) {
+  Eigen::IOFormat good_looking_fmt(Eigen::StreamPrecision, Eigen::DontAlignCols,
+                                   ", ", ", ", "", "", "", "");
+  os << "\t{\n";
+  os << "\t\t\"seq_id\": " << seq_id << ",\n";
+  os << "\t\t\"mask\": " << mask << ",\n";
+  os << "\t\t\"robot_time_stamps\": " << std::fixed << std::setprecision(2)
+     << timestamp_ms << ",\n";
+  os << std::fixed << std::setprecision(7);
+  os << "\t\t\"ts_pose_fb\": [" << pose.format(good_looking_fmt) << "],\n";
+  os << "\t\t\"tau_J\": [" << tau_J.format(good_looking_fmt) << "],\n";
+  return true;
+}
+
+inline bool save_robot_torque_json(std::ostream& os, int seq_id,
+                                   double timestamp_ms,
+                                   const RUT::Vector7d& tau_J,
+                                   bool mask) {
+  Eigen::IOFormat fmt(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ", ", ", "", "", "", "");
+  os << "\t{\n";
+  os << "\t\t\"seq_id\": " << seq_id << ",\n";
+  os << "\t\t\"mask\": " << mask << ",\n";
+  os << "\t\t\"robot_time_stamps\": " << std::fixed << std::setprecision(2)
+     << timestamp_ms << ",\n";
+  os << std::fixed << std::setprecision(7);
+  os << "\t\t\"tau_J\": [" << tau_J.format(fmt) << "],\n";
+  return true;
+}
+
+inline bool save_robot_joint_positions_json(std::ostream& os, int seq_id,
+                                            double timestamp_ms,
+                                            const RUT::Vector7d& q,
+                                            bool mask) {
+  Eigen::IOFormat fmt(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ", ", ", "", "", "", "");
+  os << "\t{\n";
+  os << "\t\t\"seq_id\": " << seq_id << ",\n";
+  os << "\t\t\"mask\": " << mask << ",\n";
+  os << "\t\t\"robot_time_stamps\": " << std::fixed << std::setprecision(2)
+     << timestamp_ms << ",\n";
+  os << std::fixed << std::setprecision(7);
+  os << "\t\t\"q\": [" << q.format(fmt) << "],\n";
+  return true;
+}
+
+inline bool save_robot_joint_velocity_json(std::ostream& os, int seq_id,
+                                           double timestamp_ms,
+                                           const RUT::Vector7d& dq,
+                                           bool mask) {
+  Eigen::IOFormat fmt(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ", ", ", "", "", "", "");
+  os << "\t{\n";
+  os << "\t\t\"seq_id\": " << seq_id << ",\n";
+  os << "\t\t\"mask\": " << mask << ",\n";
+  os << "\t\t\"robot_time_stamps\": " << std::fixed << std::setprecision(2)
+     << timestamp_ms << ",\n";
+  os << std::fixed << std::setprecision(7);
+  os << "\t\t\"dq\": [" << dq.format(fmt) << "],\n";
+  return true;
+}
+
+inline bool save_robot_joint_acceleration_json(std::ostream& os, int seq_id,
+                                               double timestamp_ms,
+                                               const RUT::Vector7d& ddq,
+                                               bool mask) {
+  Eigen::IOFormat fmt(Eigen::StreamPrecision, Eigen::DontAlignCols, ", ", ", ", "", "", "", "");
+  os << "\t{\n";
+  os << "\t\t\"seq_id\": " << seq_id << ",\n";
+  os << "\t\t\"mask\": " << mask << ",\n";
+  os << "\t\t\"robot_time_stamps\": " << std::fixed << std::setprecision(2)
+     << timestamp_ms << ",\n";
+  os << std::fixed << std::setprecision(7);
+  os << "\t\t\"ddq\": [" << ddq.format(fmt) << "],\n";
   return true;
 }
 

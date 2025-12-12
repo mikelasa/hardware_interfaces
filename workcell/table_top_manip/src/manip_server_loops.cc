@@ -141,7 +141,7 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
       wrench_fb_ur.setZero();
     }
     /* --------- UPDATE BUFFERS --------- */
-    // buffer robot pose, velocity and wrench (save data)
+    // buffer robot pose and wrench (save data)
     loop_profiler.stop("compute");
     loop_profiler.start();
     {
@@ -149,11 +149,7 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
       _pose_buffers[id].put(pose_fb);
       _pose_timestamp_ms_buffers[id].put(time_now_ms);
     }
-    //{
-      //std::lock_guard<std::mutex> lock(_vel_buffer_mtxs[id]);
-      //_vel_buffers[id].put(vel_fb);
-      //_vel_timestamp_ms_buffers[id].put(time_now_ms);
-    //}
+    //wrench buffer
     {
       std::lock_guard<std::mutex> lock(_robot_wrench_buffer_mtxs[id]);
       _robot_wrench_buffers[id].put(wrench_fb_ur);
@@ -277,6 +273,11 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
         RobotLogData log_data;
         log_data.timestamp_ms = time_now_ms;
         log_data.pose_fb = pose_fb;
+        // Extract joint torques from robot state
+        for (int i = 0; i < 7; ++i) {
+          log_data.tau_J[i] = state.tau_J[i];
+          log_data.q[i] = state.q[i];  // joint positions
+        }
         
         _logging_buffers[id].put(log_data);
         _states_robot_thread_saving[id] = true;
@@ -1225,6 +1226,8 @@ void ManipServer::robot_logging_loop(const RUT::TimePoint& time0, int id) {
       if (!ctrl_flag_saving) {
         std::cout << header << "Start saving low dim data." << std::endl;
         json_file_start(_ctrl_robot_data_streams[id]);
+        json_file_start(_ctrl_torque_data_streams[id]);
+        json_file_start(_ctrl_joint_data_streams[id]);
         ctrl_flag_saving = true;
         frames_written = 0;
       }
@@ -1245,14 +1248,30 @@ void ManipServer::robot_logging_loop(const RUT::TimePoint& time0, int id) {
         
         if (!has_data) break;
         
-        // Write to JSON - SAME FUNCTION AS ORIGINAL
+        // Write to JSON with torques
         save_robot_data_json(_ctrl_robot_data_streams[id],
                            _states_robot_seq_id[id], 
                            log_data.timestamp_ms, 
                            log_data.pose_fb,
                            false);
+
+        // Write torque-only JSON
+        save_robot_torque_json(_ctrl_torque_data_streams[id],
+                               _states_robot_seq_id[id],
+                               log_data.timestamp_ms,
+                               log_data.tau_J,
+                               false);
+        
+        // Write joint positions JSON
+        save_robot_joint_positions_json(_ctrl_joint_data_streams[id],
+                                        _states_robot_seq_id[id],
+                                        log_data.timestamp_ms,
+                                        log_data.q,
+                                        false);
         
         json_frame_ending(_ctrl_robot_data_streams[id]);
+        json_frame_ending(_ctrl_torque_data_streams[id]);
+        json_frame_ending(_ctrl_joint_data_streams[id]);
         _states_robot_seq_id[id]++;
         frames_written++;
         batch_count++;
@@ -1269,6 +1288,9 @@ void ManipServer::robot_logging_loop(const RUT::TimePoint& time0, int id) {
         
         // Flush all remaining data
         int flushed = 0;
+        RobotLogData last_log_data;
+        bool has_last_data = false;
+        
         while (true) {
           RobotLogData log_data;
           bool has_data = false;
@@ -1283,14 +1305,54 @@ void ManipServer::robot_logging_loop(const RUT::TimePoint& time0, int id) {
           
           if (!has_data) break;
           
+          // If we have a previous frame, write it with frame ending
+          if (has_last_data) {
+            save_robot_data_json(_ctrl_robot_data_streams[id],
+                               _states_robot_seq_id[id],
+                               last_log_data.timestamp_ms,
+                               last_log_data.pose_fb,
+                               false);
+            json_frame_ending(_ctrl_robot_data_streams[id]);
+            save_robot_torque_json(_ctrl_torque_data_streams[id],
+                                   _states_robot_seq_id[id],
+                                   last_log_data.timestamp_ms,
+                                   last_log_data.tau_J,
+                                   false);
+            json_frame_ending(_ctrl_torque_data_streams[id]);
+            save_robot_joint_positions_json(_ctrl_joint_data_streams[id],
+                                            _states_robot_seq_id[id],
+                                            last_log_data.timestamp_ms,
+                                            last_log_data.q,
+                                            false);
+            json_frame_ending(_ctrl_joint_data_streams[id]);
+            _states_robot_seq_id[id]++;
+            flushed++;
+          }
+          
+          // Store current as last
+          last_log_data = log_data;
+          has_last_data = true;
+        }
+        
+        // Write the very last frame without json_frame_ending
+        if (has_last_data) {
           save_robot_data_json(_ctrl_robot_data_streams[id],
                              _states_robot_seq_id[id],
-                             log_data.timestamp_ms,
-                             log_data.pose_fb,
+                             last_log_data.timestamp_ms,
+                             last_log_data.pose_fb,
                              false);
-          json_frame_ending(_ctrl_robot_data_streams[id]);
           _states_robot_seq_id[id]++;
           flushed++;
+          save_robot_torque_json(_ctrl_torque_data_streams[id],
+                                 _states_robot_seq_id[id]-1,
+                                 last_log_data.timestamp_ms,
+                                 last_log_data.tau_J,
+                                 false);
+          save_robot_joint_positions_json(_ctrl_joint_data_streams[id],
+                                          _states_robot_seq_id[id]-1,
+                                          last_log_data.timestamp_ms,
+                                          last_log_data.q,
+                                          false);
         }
         
         std::cout << header << "Flushed " << flushed << " remaining frames." << std::endl;
@@ -1298,6 +1360,10 @@ void ManipServer::robot_logging_loop(const RUT::TimePoint& time0, int id) {
         
         json_file_ending(_ctrl_robot_data_streams[id]);
         _ctrl_robot_data_streams[id].close();
+        json_file_ending(_ctrl_torque_data_streams[id]);
+        _ctrl_torque_data_streams[id].close();
+        json_file_ending(_ctrl_joint_data_streams[id]);
+        _ctrl_joint_data_streams[id].close();
         ctrl_flag_saving = false;
         _states_robot_thread_saving[id] = false;
       }
@@ -1314,5 +1380,197 @@ void ManipServer::robot_logging_loop(const RUT::TimePoint& time0, int id) {
     loop_timer.sleep_till_next();
   }
   
+  
   std::cout << header << "Joined." << std::endl;
 }
+
+// Teleoperation control loop for SpaceMouse input
+void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
+  std::string header =
+      "[ManipServer][Teleop thread] " + std::to_string(id) + ": ";
+  std::cout << header + "starting thread.\n";
+
+  RUT::Timer timer;
+  timer.tic(time0);
+
+  SpaceMouse* sm_ptr = spacemouse_ptrs[id].get();
+  if (!sm_ptr) {
+    std::cout << header << "SpaceMouse pointer is null. Exiting.\n";
+    return;
+  }
+
+  // Wait for robot feedback to be available
+  std::cout << header << "Waiting for robot feedback to be available...\n";
+  RUT::Vector7d current_pose = RUT::Vector7d::Zero();
+  int retry_count = 0;
+  while (true) {
+    {
+      std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
+      if (!_poses_fb[id].isZero()) {
+        current_pose = _poses_fb[id];
+        std::cout << header << "Got initial pose: " << current_pose.transpose() << "\n";
+        break;
+      }
+    }
+    retry_count++;
+    if (retry_count > 100) {
+      std::cerr << header << "Timeout waiting for robot feedback. Exiting.\n";
+      return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+
+  RUT::Vector7d target_pose = current_pose;
+  SpaceMouseData sm_data;
+
+  RUT::Timer loop_timer;
+  loop_timer.set_loop_rate_hz(1000);  // 100Hz teleoperation loop
+  loop_timer.start_timed_loop();
+
+  // Scaling factors for SpaceMouse input from YAML (spacemouse{id})
+  double TRANSLATION_SCALE = 1e-3;  // fallback default
+  double ROTATION_SCALE = 1e-3;     // fallback default
+  if (_teleop_translation_scales.size() > id) {
+    TRANSLATION_SCALE = _teleop_translation_scales[id];
+  }
+  if (_teleop_rotation_scales.size() > id) {
+    ROTATION_SCALE = _teleop_rotation_scales[id];
+  }
+
+  // Mode switching state (Button 2 controls rotation/translation mode)
+  enum class TeleopMode { TRANSLATION_AND_ROTATION, TRANSLATION_ONLY, ROTATION_ONLY };
+  TeleopMode current_mode = TeleopMode::TRANSLATION_AND_ROTATION;
+  int prev_button2_state = 0;
+  int mode_cycle_count = 0;
+  
+  std::cout << header << "Teleoperation Mode: TRANSLATION_AND_ROTATION (press right button to cycle)\n";
+
+  while (true) {
+    // Check if we should exit
+    {
+      std::lock_guard<std::mutex> lock(_ctrl_mtx);
+      if (!_ctrl_flag_running) {
+        break;
+      }
+    }
+
+    // Read SpaceMouse data
+    if (sm_ptr->get_data(sm_data)) {
+      // Handle button press for mode switching
+      if (sm_data.buttons.size() >= 2 && sm_data.buttons[1] && !prev_button2_state) {
+        // Right button (Button 2) pressed - cycle through modes
+        int mode_val = static_cast<int>(current_mode);
+        mode_val = (mode_val + 1) % 3;
+        current_mode = static_cast<TeleopMode>(mode_val);
+        mode_cycle_count++;
+        
+        std::string mode_name;
+        switch (current_mode) {
+          case TeleopMode::TRANSLATION_AND_ROTATION:
+            mode_name = "TRANSLATION_AND_ROTATION";
+            break;
+          case TeleopMode::TRANSLATION_ONLY:
+            mode_name = "TRANSLATION_ONLY";
+            break;
+          case TeleopMode::ROTATION_ONLY:
+            mode_name = "ROTATION_ONLY";
+            break;
+        }
+        std::cout << header << "Mode switched to: " << mode_name << "\n";
+      }
+      prev_button2_state = (sm_data.buttons.size() >= 2) ? sm_data.buttons[1] : 0;
+
+      // Apply scaling and dead zone
+      double tx_scaled = sm_data.tx * TRANSLATION_SCALE;
+      double ty_scaled = sm_data.ty * TRANSLATION_SCALE;
+      double tz_scaled = sm_data.tz * TRANSLATION_SCALE;
+      double rx_scaled = sm_data.rx * ROTATION_SCALE;
+      double ry_scaled = sm_data.ry * ROTATION_SCALE;
+      double rz_scaled = sm_data.rz * ROTATION_SCALE;
+
+      // Check for significant movement
+      double tx_norm = std::abs(tx_scaled);
+      double ty_norm = std::abs(ty_scaled);
+      double tz_norm = std::abs(tz_scaled);
+      double angle = std::sqrt(rx_scaled * rx_scaled + ry_scaled * ry_scaled + rz_scaled * rz_scaled);
+      
+      // Only apply incremental update if movement is significant (dead zone)
+      if (tx_norm > 1e-6 || ty_norm > 1e-6 || tz_norm > 1e-6 || angle > 1e-6) {
+        // Always start from latest feedback to avoid drift from stale targets
+        RUT::Vector7d base_pose;
+        {
+          std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
+          base_pose = _poses_fb[id];
+        }
+
+        // Translation: apply scaled incremental values to base pose
+        target_pose = base_pose;
+        
+        // Apply translation based on mode
+        if (current_mode == TeleopMode::TRANSLATION_AND_ROTATION || 
+            current_mode == TeleopMode::TRANSLATION_ONLY) {
+          target_pose(0) = base_pose(0) + tx_scaled;
+          target_pose(1) = base_pose(1) + ty_scaled;
+          target_pose(2) = base_pose(2) + tz_scaled;
+        } else {
+          // ROTATION_ONLY: keep position
+          target_pose(0) = base_pose(0);
+          target_pose(1) = base_pose(1);
+          target_pose(2) = base_pose(2);
+        }
+
+        // Rotation: compose small rotation onto base quaternion based on mode
+        if (current_mode == TeleopMode::TRANSLATION_AND_ROTATION || 
+            current_mode == TeleopMode::ROTATION_ONLY) {
+          if (angle > 1e-6) {
+            Eigen::Vector3d axis(rx_scaled, ry_scaled, rz_scaled);
+            if (axis.norm() > 1e-12) {
+              axis.normalize();
+              Eigen::Quaterniond rot_incr(Eigen::AngleAxisd(angle, axis));
+              Eigen::Quaterniond base_q(base_pose(6), base_pose(3), base_pose(4), base_pose(5));
+              Eigen::Quaterniond new_q = rot_incr * base_q;
+              new_q.normalize();
+              target_pose(3) = new_q.x();
+              target_pose(4) = new_q.y();
+              target_pose(5) = new_q.z();
+              target_pose(6) = new_q.w();
+            } else {
+              // no valid axis, keep base orientation
+              target_pose(3) = base_pose(3);
+              target_pose(4) = base_pose(4);
+              target_pose(5) = base_pose(5);
+              target_pose(6) = base_pose(6);
+            }
+          } else {
+            // keep base orientation
+            target_pose(3) = base_pose(3);
+            target_pose(4) = base_pose(4);
+            target_pose(5) = base_pose(5);
+            target_pose(6) = base_pose(6);
+          }
+        } else {
+          // TRANSLATION_ONLY: keep orientation
+          target_pose(3) = base_pose(3);
+          target_pose(4) = base_pose(4);
+          target_pose(5) = base_pose(5);
+          target_pose(6) = base_pose(6);
+        }
+
+        // Optional: clamp within a safe workspace [0,1] meters, if desired
+        // target_pose(0) = std::clamp(target_pose(0), 0.0, 1.0);
+        // target_pose(1) = std::clamp(target_pose(1), 0.0, 1.0);
+        // target_pose(2) = std::clamp(target_pose(2), 0.0, 1.0);
+      } else {
+        // No movement: follow current feedback
+        std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
+        target_pose = _poses_fb[id];
+      }
+
+      // Schedule waypoint for the robot (absolute pose)
+      set_target_pose(target_pose, 50, id);  // 50ms dt
+    }
+
+    loop_timer.sleep_till_next();
+  }
+}
+

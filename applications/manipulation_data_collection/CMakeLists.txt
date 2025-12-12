@@ -23,3 +23,25 @@ target_link_libraries(manipulation_data_collection
   -lPocoNet
   -lPocoFoundation
 )
+
+add_executable(replay src/replay.cc)
+target_link_libraries(replay
+  ManipServer
+  ${RUT}
+  ${YAMLLib}
+  ${OpenCV_LIBS}
+  -lPocoNet
+  -lPocoFoundation
+)
+
+add_executable(main_teleop src/main_teleop.cc)
+target_link_libraries(main_teleop
+  ManipServer
+  SPACEMOUSE
+  ${RUT}
+  ${YAMLLib}
+  ${OpenCV_LIBS}
+  -lPocoNet
+  -lPocoFoundation
+  pthread
+)
