@@ -45,6 +45,13 @@ const std::vector<ControllerSelection>& all_controller_selections() {
   return modes;
 }
 
+const std::vector<TeleopSelection>& all_teleop_selections() {
+  static const std::vector<TeleopSelection> modes = {
+      TeleopSelection::NONE, TeleopSelection::SPACEMOUSE,
+      TeleopSelection::GAMEPAD};
+  return modes;
+}
+
 const std::vector<RandomType>& all_random_types() {
   static const std::vector<RandomType> modes = {
       RandomType::NONE, RandomType::CONSTANT, RandomType::UNIFORM,
@@ -139,6 +146,20 @@ const char* to_string(const ControllerSelection e) {
 }
 
 template <>
+const char* to_string(const TeleopSelection e) {
+  switch (e) {
+    case TeleopSelection::NONE:
+      return "NONE";
+    case TeleopSelection::SPACEMOUSE:
+      return "SPACEMOUSE";
+    case TeleopSelection::GAMEPAD:
+      return "GAMEPAD";
+    default:
+      return "INVALID_TELEOP_SELECTION";
+  }
+}
+
+template <>
 const char* to_string(const RandomType e) {
   switch (e) {
     case RandomType::NONE:
@@ -218,6 +239,17 @@ ControllerSelection string_to_enum(const std::string& string) {
   }
 
   return ControllerSelection::IMPEDANCE_CONTROLLER;
+}
+
+template <>
+TeleopSelection string_to_enum(const std::string& string) {
+  for (const auto& e : all_teleop_selections()) {
+    if (string == to_string(e)) {
+      return e;
+    }
+  }
+
+  return TeleopSelection::NONE;
 }
 
 template <>

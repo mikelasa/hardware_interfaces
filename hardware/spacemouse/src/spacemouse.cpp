@@ -151,6 +151,8 @@ void SpaceMouse::parse_hid_report(const unsigned char* data, int size, SpaceMous
 
   const double max_val = 350.0;
 
+  
+
   if (data[0] == 1) {  // Translation report
     int16_t tx_raw = convert_buffer(data[3], data[4]);  // X
     int16_t ty_raw = convert_buffer(data[1], data[2]);  // Y
@@ -159,7 +161,7 @@ void SpaceMouse::parse_hid_report(const unsigned char* data, int size, SpaceMous
     sm_data.tx = (tx_raw / max_val) * config_.translation_scale;
     sm_data.ty = -(ty_raw / max_val) * config_.translation_scale;  // Invert Y
     sm_data.tz = -(tz_raw / max_val) * config_.translation_scale;  // Invert Z
-    
+
     apply_dead_zone(sm_data.tx, config_.dead_zone);
     apply_dead_zone(sm_data.ty, config_.dead_zone);
     apply_dead_zone(sm_data.tz, config_.dead_zone);

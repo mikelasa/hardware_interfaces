@@ -55,11 +55,6 @@ class TeleopInterface {
    */
   virtual bool is_connected() const = 0;
 
-  /**
-   * Get device information
-   * @return String with device details
-   */
-  virtual std::string get_device_info() const = 0;
 };
 
 #endif  // _TELEOP_INTERFACE_HEADER_

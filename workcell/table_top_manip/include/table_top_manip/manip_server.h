@@ -33,6 +33,7 @@
 #include <franka/franka.h>
 #include <wsg_gripper/wsg_gripper.h>
 #include <spacemouse/spacemouse.h>
+#include <gamepad/gamepad.h>
 
 #include <RobotUtilities/data_buffer.h>
 
@@ -65,6 +66,7 @@ struct ManipServerConfig {
   CameraSelection camera_selection{CameraSelection::NONE};
   ForceSensingMode force_sensing_mode{ForceSensingMode::NONE};
   ControllerSelection controller_selection{ControllerSelection::IMPEDANCE_CONTROLLER};
+  TeleopSelection teleop_device{TeleopSelection::GAMEPAD};
   RUT::Matrix6d low_damping{};
   std::vector<int> output_rgb_hw{};
 
@@ -92,6 +94,8 @@ struct ManipServerConfig {
           node["force_sensing_mode"].as<std::string>());
       controller_selection = string_to_enum<ControllerSelection>(
           node["controller_selection"].as<std::string>());
+      teleop_device = string_to_enum<TeleopSelection>(
+          node["teleop_device"].as<std::string>());
 
       low_damping = RUT::deserialize_vector<RUT::Vector6d>(node["low_damping"])
                         .asDiagonal();
@@ -254,6 +258,7 @@ class ManipServer {
   std::vector<std::shared_ptr<RobotInterfaces>> robot_ptrs;
   std::vector<std::shared_ptr<JSInterfaces>> eoat_ptrs;
   std::vector<std::shared_ptr<SpaceMouse>> spacemouse_ptrs;
+  std::vector<std::shared_ptr<Gamepad>> gamepad_ptrs;
   // Teleoperation scaling per robot id (from YAML spacemouse{id})
   std::vector<double> _teleop_translation_scales;
   std::vector<double> _teleop_rotation_scales;

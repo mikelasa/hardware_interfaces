@@ -317,36 +317,49 @@ bool ManipServer::initialize(const std::string& config_path) {
     }
   }
 
-  // Initialize SpaceMouse devices for teleoperation if enabled
+  // Initialize Gamepad devices for teleoperation if enabled
   std::cout << "[ManipServer] Initializing teleoperation devices.\n";
-  if (_config.teleop) {
+  if (_config.teleop_device == TeleopSelection::GAMEPAD) {
     for (int id : _id_list) {
-      SpaceMouse::SpaceMouseConfig sm_config;
-      try {
-        sm_config.deserialize(config["spacemouse" + std::to_string(id)]);
-      } catch (const std::exception& e) {
-        std::cerr << "Warning: Failed to load SpaceMouse config for id " << id
-                  << ": " << e.what() << std::endl;
-        std::cerr << "Teleoperation will be disabled for this robot." << std::endl;
-        _config.teleop = false;
-        continue;
+      Gamepad::GamepadConfig gamepad_config;
+      double translation_scale = 1e-3;   // default scale
+      double rotation_scale = 1e-3;      // default scale
+      
+      // Parse gamepad-specific config
+      auto gamepad_node = config["gamepad" + std::to_string(id)];
+      if (gamepad_node) {
+        if (gamepad_node["device_path"]) {
+          gamepad_config.device_path = gamepad_node["device_path"].as<std::string>();
+        }
+        if (gamepad_node["deadzone_stick"]) {
+          gamepad_config.deadzone_stick = gamepad_node["deadzone_stick"].as<double>();
+        }
+        if (gamepad_node["deadzone_trigger"]) {
+          gamepad_config.deadzone_trigger = gamepad_node["deadzone_trigger"].as<double>();
+        }
+        if (gamepad_node["update_rate_hz"]) {
+          gamepad_config.update_rate_hz = gamepad_node["update_rate_hz"].as<int>();
+        }
+        if (gamepad_node["translation_scale"]) {
+          translation_scale = gamepad_node["translation_scale"].as<double>();
+        }
+        if (gamepad_node["rotation_scale"]) {
+          rotation_scale = gamepad_node["rotation_scale"].as<double>();
+        }
       }
       
-      spacemouse_ptrs.emplace_back(new SpaceMouse);
-      SpaceMouse* sm_ptr = spacemouse_ptrs[id].get();
-      if (!sm_ptr->init(sm_config)) {
-        std::cerr << "Warning: Failed to initialize SpaceMouse for id " << id << std::endl;
-        std::cerr << "Teleoperation will be disabled for this robot." << std::endl;
-        _config.teleop = false;
-      } else {
-        std::cout << "[ManipServer] SpaceMouse " << id << " initialized: "
-                  << sm_ptr->get_device_info() << std::endl;
-        // Store teleop scaling from YAML
-        _teleop_translation_scales.push_back(sm_config.translation_scale);
-        _teleop_rotation_scales.push_back(sm_config.rotation_scale);
+      gamepad_ptrs.emplace_back(new Gamepad);
+      Gamepad* gamepad_ptr = static_cast<Gamepad*>(gamepad_ptrs[id].get());
+      if (!gamepad_ptr->init(gamepad_config)) {
+        std::cerr << "Failed to initialize Gamepad for id " << id
+                  << ". Exiting." << std::endl;
+        return false;
       }
+      _teleop_translation_scales.push_back(translation_scale);
+      _teleop_rotation_scales.push_back(rotation_scale);
     }
   }
+      
 
   // create the data buffers
   // each variable is saved using DataBuffer, which is a thread-safe circular buffer
@@ -532,7 +545,7 @@ bool ManipServer::initialize(const std::string& config_path) {
       _eoat_threads.emplace_back(&ManipServer::eoat_loop, this, std::ref(time0),
                                  id);
     }
-    if (_config.teleop && spacemouse_ptrs.size() > id && spacemouse_ptrs[id]) {
+    if (_config.teleop && gamepad_ptrs.size() > id && gamepad_ptrs[id]) {
       _teleop_threads.emplace_back(&ManipServer::teleop_loop, this, std::ref(time0),
                                    id);
     }
@@ -619,6 +632,12 @@ void ManipServer::join_threads() {
     for (auto& sm_ptr : spacemouse_ptrs) {
       if (sm_ptr) {
         sm_ptr->cleanup();
+      }
+    }
+    // Cleanup Gamepad devices
+    for (auto& gp_ptr : gamepad_ptrs) {
+      if (gp_ptr) {
+        gp_ptr->cleanup();
       }
     }
   }

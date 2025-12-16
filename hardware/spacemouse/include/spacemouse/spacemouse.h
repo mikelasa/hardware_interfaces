@@ -62,10 +62,10 @@ class SpaceMouse : public TeleopInterface {
   bool cleanup() override;
   bool get_data(TeleopData& data) override;
   bool is_connected() const override;
-  std::string get_device_info() const override;
   
   // SpaceMouse-specific methods
   bool get_data(SpaceMouseData& data);
+  std::string get_device_info() const;
 
  private:
   void read_loop();

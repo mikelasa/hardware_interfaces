@@ -40,6 +40,7 @@ target_link_libraries(ManipServer
   HI_COMMON
   FRANKA
   SPACEMOUSE
+  GAMEPAD
   Franka::Franka
   ${RUT}
   ${FORCE_CONTROLLERS}

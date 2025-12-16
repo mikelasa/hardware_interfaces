@@ -1384,7 +1384,7 @@ void ManipServer::robot_logging_loop(const RUT::TimePoint& time0, int id) {
   std::cout << header << "Joined." << std::endl;
 }
 
-// Teleoperation control loop for SpaceMouse input
+// Teleoperation control loop for Gamepad input
 void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   std::string header =
       "[ManipServer][Teleop thread] " + std::to_string(id) + ": ";
@@ -1393,11 +1393,12 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   RUT::Timer timer;
   timer.tic(time0);
 
-  SpaceMouse* sm_ptr = spacemouse_ptrs[id].get();
-  if (!sm_ptr) {
-    std::cout << header << "SpaceMouse pointer is null. Exiting.\n";
+  // Verify Gamepad pointer exists
+  if (!gamepad_ptrs[id]) {
+    std::cout << header << "Gamepad pointer is null. Exiting.\n";
     return;
   }
+  std::cout << header << "Using Gamepad for teleoperation.\n";
 
   // Wait for robot feedback to be available
   std::cout << header << "Waiting for robot feedback to be available...\n";
@@ -1421,15 +1422,15 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   }
 
   RUT::Vector7d target_pose = current_pose;
-  SpaceMouseData sm_data;
+  GamepadData gp_data;
 
   RUT::Timer loop_timer;
-  loop_timer.set_loop_rate_hz(1000);  // 100Hz teleoperation loop
+  loop_timer.set_loop_rate_hz(100);  // 100Hz teleoperation loop
   loop_timer.start_timed_loop();
 
-  // Scaling factors for SpaceMouse input from YAML (spacemouse{id})
-  double TRANSLATION_SCALE = 1e-3;  // fallback default
-  double ROTATION_SCALE = 1e-3;     // fallback default
+  // Scaling factors from YAML
+  double TRANSLATION_SCALE = 1;  // fallback default
+  double ROTATION_SCALE = 1;     // fallback default
   if (_teleop_translation_scales.size() > id) {
     TRANSLATION_SCALE = _teleop_translation_scales[id];
   }
@@ -1437,13 +1438,7 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     ROTATION_SCALE = _teleop_rotation_scales[id];
   }
 
-  // Mode switching state (Button 2 controls rotation/translation mode)
-  enum class TeleopMode { TRANSLATION_AND_ROTATION, TRANSLATION_ONLY, ROTATION_ONLY };
-  TeleopMode current_mode = TeleopMode::TRANSLATION_AND_ROTATION;
-  int prev_button2_state = 0;
-  int mode_cycle_count = 0;
-  
-  std::cout << header << "Teleoperation Mode: TRANSLATION_AND_ROTATION (press right button to cycle)\n";
+  std::cout << header << "Gamepad teleoperation active (left stick = translation, right stick = rotation)\n";
 
   while (true) {
     // Check if we should exit
@@ -1454,121 +1449,77 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
       }
     }
 
-    // Read SpaceMouse data
-    if (sm_ptr->get_data(sm_data)) {
-      // Handle button press for mode switching
-      if (sm_data.buttons.size() >= 2 && sm_data.buttons[1] && !prev_button2_state) {
-        // Right button (Button 2) pressed - cycle through modes
-        int mode_val = static_cast<int>(current_mode);
-        mode_val = (mode_val + 1) % 3;
-        current_mode = static_cast<TeleopMode>(mode_val);
-        mode_cycle_count++;
-        
-        std::string mode_name;
-        switch (current_mode) {
-          case TeleopMode::TRANSLATION_AND_ROTATION:
-            mode_name = "TRANSLATION_AND_ROTATION";
-            break;
-          case TeleopMode::TRANSLATION_ONLY:
-            mode_name = "TRANSLATION_ONLY";
-            break;
-          case TeleopMode::ROTATION_ONLY:
-            mode_name = "ROTATION_ONLY";
-            break;
-        }
-        std::cout << header << "Mode switched to: " << mode_name << "\n";
-      }
-      prev_button2_state = (sm_data.buttons.size() >= 2) ? sm_data.buttons[1] : 0;
+    double tx_scaled = 0, ty_scaled = 0, tz_scaled = 0;
+    double rx_scaled = 0, ry_scaled = 0, rz_scaled = 0;
 
-      // Apply scaling and dead zone
-      double tx_scaled = sm_data.tx * TRANSLATION_SCALE;
-      double ty_scaled = sm_data.ty * TRANSLATION_SCALE;
-      double tz_scaled = sm_data.tz * TRANSLATION_SCALE;
-      double rx_scaled = sm_data.rx * ROTATION_SCALE;
-      double ry_scaled = sm_data.ry * ROTATION_SCALE;
-      double rz_scaled = sm_data.rz * ROTATION_SCALE;
-
-      // Check for significant movement
-      double tx_norm = std::abs(tx_scaled);
-      double ty_norm = std::abs(ty_scaled);
-      double tz_norm = std::abs(tz_scaled);
-      double angle = std::sqrt(rx_scaled * rx_scaled + ry_scaled * ry_scaled + rz_scaled * rz_scaled);
+    // Read Gamepad data
+    if (gamepad_ptrs[id]->get_data(gp_data)) {
+      // Left stick to translation (X, Y, Z from sticks and triggers)
+      tx_scaled = -gp_data.left_stick_y * TRANSLATION_SCALE;
+      ty_scaled = gp_data.left_stick_x * TRANSLATION_SCALE;
+      tz_scaled = (gp_data.left_trigger - gp_data.right_trigger) * TRANSLATION_SCALE;
       
-      // Only apply incremental update if movement is significant (dead zone)
-      if (tx_norm > 1e-6 || ty_norm > 1e-6 || tz_norm > 1e-6 || angle > 1e-6) {
-        // Always start from latest feedback to avoid drift from stale targets
-        RUT::Vector7d base_pose;
-        {
-          std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
-          base_pose = _poses_fb[id];
-        }
+      // Right stick to rotation
+      rx_scaled = gp_data.right_stick_x * ROTATION_SCALE;
+      ry_scaled = gp_data.right_stick_y * ROTATION_SCALE;
+      rz_scaled = 0.0;
+    }
 
-        // Translation: apply scaled incremental values to base pose
-        target_pose = base_pose;
-        
-        // Apply translation based on mode
-        if (current_mode == TeleopMode::TRANSLATION_AND_ROTATION || 
-            current_mode == TeleopMode::TRANSLATION_ONLY) {
-          target_pose(0) = base_pose(0) + tx_scaled;
-          target_pose(1) = base_pose(1) + ty_scaled;
-          target_pose(2) = base_pose(2) + tz_scaled;
-        } else {
-          // ROTATION_ONLY: keep position
-          target_pose(0) = base_pose(0);
-          target_pose(1) = base_pose(1);
-          target_pose(2) = base_pose(2);
-        }
+    // Check for significant movement
+    double tx_norm = std::abs(tx_scaled);
+    double ty_norm = std::abs(ty_scaled);
+    double tz_norm = std::abs(tz_scaled);
+    double angle = std::sqrt(rx_scaled * rx_scaled + ry_scaled * ry_scaled + rz_scaled * rz_scaled);
+    
+    // Only apply incremental update if movement is significant
+    if (tx_norm > 1e-6 || ty_norm > 1e-6 || tz_norm > 1e-6 || angle > 1e-6) {
+      // Always start from latest feedback to avoid drift
+      RUT::Vector7d base_pose;
+      {
+        std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
+        base_pose = _poses_fb[id];
+      }
 
-        // Rotation: compose small rotation onto base quaternion based on mode
-        if (current_mode == TeleopMode::TRANSLATION_AND_ROTATION || 
-            current_mode == TeleopMode::ROTATION_ONLY) {
-          if (angle > 1e-6) {
-            Eigen::Vector3d axis(rx_scaled, ry_scaled, rz_scaled);
-            if (axis.norm() > 1e-12) {
-              axis.normalize();
-              Eigen::Quaterniond rot_incr(Eigen::AngleAxisd(angle, axis));
-              Eigen::Quaterniond base_q(base_pose(6), base_pose(3), base_pose(4), base_pose(5));
-              Eigen::Quaterniond new_q = rot_incr * base_q;
-              new_q.normalize();
-              target_pose(3) = new_q.x();
-              target_pose(4) = new_q.y();
-              target_pose(5) = new_q.z();
-              target_pose(6) = new_q.w();
-            } else {
-              // no valid axis, keep base orientation
-              target_pose(3) = base_pose(3);
-              target_pose(4) = base_pose(4);
-              target_pose(5) = base_pose(5);
-              target_pose(6) = base_pose(6);
-            }
-          } else {
-            // keep base orientation
-            target_pose(3) = base_pose(3);
-            target_pose(4) = base_pose(4);
-            target_pose(5) = base_pose(5);
-            target_pose(6) = base_pose(6);
-          }
+      target_pose = base_pose;
+      
+      // Apply translation
+      target_pose(0) = base_pose(0) + tx_scaled;
+      target_pose(1) = base_pose(1) + ty_scaled;
+      target_pose(2) = base_pose(2) + tz_scaled;
+
+      // Apply rotation
+      if (angle > 1e-6) {
+        Eigen::Vector3d axis(rx_scaled, ry_scaled, rz_scaled);
+        if (axis.norm() > 1e-12) {
+          axis.normalize();
+          Eigen::Quaterniond rot_incr(Eigen::AngleAxisd(angle, axis));
+          Eigen::Quaterniond base_q(base_pose(6), base_pose(3), base_pose(4), base_pose(5));
+          Eigen::Quaterniond new_q = rot_incr * base_q;
+          new_q.normalize();
+          target_pose(3) = new_q.x();
+          target_pose(4) = new_q.y();
+          target_pose(5) = new_q.z();
+          target_pose(6) = new_q.w();
         } else {
-          // TRANSLATION_ONLY: keep orientation
           target_pose(3) = base_pose(3);
           target_pose(4) = base_pose(4);
           target_pose(5) = base_pose(5);
           target_pose(6) = base_pose(6);
         }
-
-        // Optional: clamp within a safe workspace [0,1] meters, if desired
-        // target_pose(0) = std::clamp(target_pose(0), 0.0, 1.0);
-        // target_pose(1) = std::clamp(target_pose(1), 0.0, 1.0);
-        // target_pose(2) = std::clamp(target_pose(2), 0.0, 1.0);
       } else {
-        // No movement: follow current feedback
-        std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
-        target_pose = _poses_fb[id];
+        target_pose(3) = base_pose(3);
+        target_pose(4) = base_pose(4);
+        target_pose(5) = base_pose(5);
+        target_pose(6) = base_pose(6);
       }
-
-      // Schedule waypoint for the robot (absolute pose)
-      set_target_pose(target_pose, 50, id);  // 50ms dt
+    } else {
+      // No movement: follow current feedback
+      std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
+      target_pose = _poses_fb[id];
     }
+
+    // Schedule waypoint for the robot
+    set_target_pose(target_pose, 50, id);  // 50ms dt
 
     loop_timer.sleep_till_next();
   }

@@ -39,6 +39,8 @@ enum class RobotSelection {UR_RTDE, FRANKA };
 
 enum class ControllerSelection {IMPEDANCE_CONTROLLER, ADMITTANCE_CONTROLLER };
 
+enum class TeleopSelection { NONE, SPACEMOUSE, GAMEPAD };
+
 enum class RandomType {
   NONE,
   CONSTANT,

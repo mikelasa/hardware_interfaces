@@ -11,12 +11,11 @@ data_folder: "/home/robotlab/data/real/test_3"  # folder to save data
 mock_hardware: false
 bimanual: false
 
-
 run_robot_thread: true
 run_wrench_thread: true
 run_rgb_thread: true
 run_eoat_thread: false
-teleop: True 
+teleop: true 
 plot_rgb: false
 
 rgb_buffer_size: 11
@@ -27,6 +26,7 @@ robot_selection: "FRANKA"  # "UR_RTDE" or "FRANKA"
 camera_selection: "REALSENSE"
 force_sensing_mode: "JOINT_SENSORS"
 controller_selection: "IMPEDANCE_CONTROLLER"
+teleop_device: "GAMEPAD"  # "GAMEPAD" or "none"
 low_damping: [2.0, 2.0, 2.0, 0.1, 0.1, 0.1]
 output_rgb_hw: [224, 224]
 
@@ -89,9 +89,17 @@ spacemouse0:
   vendor_id: 0x256f
   product_id: 0xc635
   device_index: 0
-  translation_scale: 1.0
-  rotation_scale: 0.5
+  translation_scale: 0.8
+  rotation_scale: 0.1
   dead_zone: 0.05
   enable_filtering: true
   filter_alpha: 0.3
   update_rate_hz: 1000
+
+gamepad0:
+  device_path: "/dev/input/js0"
+  deadzone_stick: 0.2
+  deadzone_trigger: 0.2
+  update_rate_hz: 100
+  translation_scale: 0.2
+  rotation_scale: 0.1

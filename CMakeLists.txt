@@ -47,6 +47,7 @@ add_subdirectory(hardware/ur_rtde)
 add_subdirectory(hardware/wsg_gripper)
 add_subdirectory(hardware/franka)
 add_subdirectory(hardware/spacemouse)
+add_subdirectory(hardware/gamepad)
 
 # workcell to build
 # include every "include" directory under /hardware/*
