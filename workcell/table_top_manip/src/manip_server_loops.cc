@@ -1425,7 +1425,7 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   GamepadData gp_data;
 
   RUT::Timer loop_timer;
-  loop_timer.set_loop_rate_hz(200);  // 200Hz teleoperation loop
+  loop_timer.set_loop_rate_hz(125);  
   loop_timer.start_timed_loop();
 
   // Scaling factors from YAML
@@ -1486,7 +1486,7 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
       target_pose(1) += ty_scaled;
       target_pose(2) += tz_scaled;
 
-      // Apply rotation
+      // Apply rotation DEACTIVATED FOR SIMPLICITY
       /*
       if (angle > 1e-6) {
         Eigen::Vector3d axis(rx_scaled, ry_scaled, rz_scaled);
