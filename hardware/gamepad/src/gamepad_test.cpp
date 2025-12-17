@@ -11,7 +11,7 @@ int main() {
 
   // Xbox 360 controller device path
   config.device_path = "/dev/input/js0";
-  config.update_rate_hz = 100;
+  config.update_rate_hz = 300;
 
   std::cout << "Initializing Xbox controller...\n";
   if (!gamepad.init(config)) {

@@ -1425,7 +1425,7 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   GamepadData gp_data;
 
   RUT::Timer loop_timer;
-  loop_timer.set_loop_rate_hz(100);  // 100Hz teleoperation loop
+  loop_timer.set_loop_rate_hz(200);  // 200Hz teleoperation loop
   loop_timer.start_timed_loop();
 
   // Scaling factors from YAML
@@ -1438,7 +1438,7 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     ROTATION_SCALE = _teleop_rotation_scales[id];
   }
 
-  std::cout << header << "Gamepad teleoperation active (left stick = translation, right stick = rotation)\n";
+  std::cout << header << "Gamepad teleoperation active (left stick = translation, right stick = rotation, LT/LB = translation in Z)\n";
 
   while (true) {
     // Check if we should exit
@@ -1455,8 +1455,8 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     // Read Gamepad data
     if (gamepad_ptrs[id]->get_data(gp_data)) {
       // Left stick to translation (X, Y, Z from sticks and triggers)
-      tx_scaled = -gp_data.left_stick_y * TRANSLATION_SCALE;
-      ty_scaled = gp_data.left_stick_x * TRANSLATION_SCALE;
+      tx_scaled = gp_data.left_stick_y * TRANSLATION_SCALE;
+      ty_scaled = -gp_data.left_stick_x * TRANSLATION_SCALE;
       tz_scaled = (gp_data.left_trigger - gp_data.right_trigger) * TRANSLATION_SCALE;
       
       // Right stick to rotation
@@ -1470,24 +1470,28 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     double ty_norm = std::abs(ty_scaled);
     double tz_norm = std::abs(tz_scaled);
     double angle = std::sqrt(rx_scaled * rx_scaled + ry_scaled * ry_scaled + rz_scaled * rz_scaled);
+
+    // Always start from latest feedback to avoid drift
+    static RUT::Vector7d target_pose;
+    RUT::Vector7d base_pose;
+    {
+      std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
+      base_pose = _poses_fb[id];
+    }
     
     // Only apply incremental update if movement is significant
-    if (tx_norm > 1e-6 || ty_norm > 1e-6 || tz_norm > 1e-6 || angle > 1e-6) {
-      // Always start from latest feedback to avoid drift
-      RUT::Vector7d base_pose;
-      {
-        std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
-        base_pose = _poses_fb[id];
-      }
-
-      target_pose = base_pose;
+    if (tx_norm > 1e-9 || ty_norm > 1e-9 || tz_norm > 1e-9 || angle > 1e-6) {
       
       // Apply translation
-      target_pose(0) = base_pose(0) + tx_scaled;
-      target_pose(1) = base_pose(1) + ty_scaled;
-      target_pose(2) = base_pose(2) + tz_scaled;
+      //target_pose(0) = base_pose(0) + tx_scaled;
+      //target_pose(1) = base_pose(1) + ty_scaled;
+      //arget_pose(2) = base_pose(2) + tz_scaled;
+      target_pose(0) += tx_scaled;
+      target_pose(1) += ty_scaled;
+      target_pose(2) += tz_scaled;
 
       // Apply rotation
+      /*
       if (angle > 1e-6) {
         Eigen::Vector3d axis(rx_scaled, ry_scaled, rz_scaled);
         if (axis.norm() > 1e-12) {
@@ -1511,15 +1515,14 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
         target_pose(4) = base_pose(4);
         target_pose(5) = base_pose(5);
         target_pose(6) = base_pose(6);
-      }
+      }*/
     } else {
-      // No movement: follow current feedback
-      std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
-      target_pose = _poses_fb[id];
+      // keep last target if no significant movement
+      target_pose = target_pose;
     }
 
     // Schedule waypoint for the robot
-    set_target_pose(target_pose, 50, id);  // 50ms dt
+    set_target_pose(target_pose, 1, id);  // 100ms dt
 
     loop_timer.sleep_till_next();
   }
