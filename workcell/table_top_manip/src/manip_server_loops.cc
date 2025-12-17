@@ -1438,6 +1438,13 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     ROTATION_SCALE = _teleop_rotation_scales[id];
   }
 
+  // refresh base pose
+  RUT::Vector7d base_pose;
+  {
+    std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
+    base_pose = _poses_fb[id];
+  }
+
   std::cout << header << "Gamepad teleoperation active (left stick = translation, right stick = rotation, LT/LB = translation in Z)\n";
 
   while (true) {
@@ -1470,22 +1477,11 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     double ty_norm = std::abs(ty_scaled);
     double tz_norm = std::abs(tz_scaled);
     double angle = std::sqrt(rx_scaled * rx_scaled + ry_scaled * ry_scaled + rz_scaled * rz_scaled);
-
-    // Always start from latest feedback to avoid drift
-    static RUT::Vector7d target_pose;
-    RUT::Vector7d base_pose;
-    {
-      std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
-      base_pose = _poses_fb[id];
-    }
     
     // Only apply incremental update if movement is significant
     if (tx_norm > 1e-9 || ty_norm > 1e-9 || tz_norm > 1e-9 || angle > 1e-6) {
       
       // Apply translation
-      //target_pose(0) = base_pose(0) + tx_scaled;
-      //target_pose(1) = base_pose(1) + ty_scaled;
-      //arget_pose(2) = base_pose(2) + tz_scaled;
       target_pose(0) += tx_scaled;
       target_pose(1) += ty_scaled;
       target_pose(2) += tz_scaled;
