@@ -910,6 +910,7 @@ void ManipServer::joint_sensor_wrench_loop(const RUT::TimePoint& time0, int publ
         save_wrench_data_json(_ctrl_wrench_data_streams[id],
                              _states_wrench_seq_id[id], timer.toc_ms(),
                              wrench_fb);
+        json_last_frame_ending(_ctrl_wrench_data_streams[id]);
         json_file_ending(_ctrl_wrench_data_streams[id]);
         _ctrl_wrench_data_streams[id].close();
         ctrl_flag_saving = false;
@@ -1046,6 +1047,7 @@ void ManipServer::ext_sensor_wrench_loop(const RUT::TimePoint& time0, int publis
         save_wrench_data_json(_ctrl_wrench_data_streams[id],
                               _states_wrench_seq_id[id], timer.toc_ms(),
                               wrench_fb);
+        json_last_frame_ending(_ctrl_wrench_data_streams[id]);
         json_file_ending(_ctrl_wrench_data_streams[id]);
         _ctrl_wrench_data_streams[id].close();
         ctrl_flag_saving = false;
@@ -1305,7 +1307,7 @@ void ManipServer::robot_logging_loop(const RUT::TimePoint& time0, int id) {
           
           if (!has_data) break;
           
-          // If we have a previous frame, write it with frame ending
+          // If we have a previous frame, write it with frame ending (comma)
           if (has_last_data) {
             save_robot_data_json(_ctrl_robot_data_streams[id],
                                _states_robot_seq_id[id],
@@ -1313,12 +1315,14 @@ void ManipServer::robot_logging_loop(const RUT::TimePoint& time0, int id) {
                                last_log_data.pose_fb,
                                false);
             json_frame_ending(_ctrl_robot_data_streams[id]);
+            
             save_robot_torque_json(_ctrl_torque_data_streams[id],
                                    _states_robot_seq_id[id],
                                    last_log_data.timestamp_ms,
                                    last_log_data.tau_J,
                                    false);
             json_frame_ending(_ctrl_torque_data_streams[id]);
+            
             save_robot_joint_positions_json(_ctrl_joint_data_streams[id],
                                             _states_robot_seq_id[id],
                                             last_log_data.timestamp_ms,
@@ -1334,35 +1338,55 @@ void ManipServer::robot_logging_loop(const RUT::TimePoint& time0, int id) {
           has_last_data = true;
         }
         
-        // Write the very last frame without json_frame_ending
+        // Write the very last frame WITHOUT comma, then close with json_file_ending
         if (has_last_data) {
           save_robot_data_json(_ctrl_robot_data_streams[id],
                              _states_robot_seq_id[id],
                              last_log_data.timestamp_ms,
                              last_log_data.pose_fb,
                              false);
-          _states_robot_seq_id[id]++;
-          flushed++;
+          json_last_frame_ending(_ctrl_robot_data_streams[id]);
+          
           save_robot_torque_json(_ctrl_torque_data_streams[id],
-                                 _states_robot_seq_id[id]-1,
+                                 _states_robot_seq_id[id],
                                  last_log_data.timestamp_ms,
                                  last_log_data.tau_J,
                                  false);
+          json_last_frame_ending(_ctrl_torque_data_streams[id]);
+          
           save_robot_joint_positions_json(_ctrl_joint_data_streams[id],
-                                          _states_robot_seq_id[id]-1,
+                                          _states_robot_seq_id[id],
                                           last_log_data.timestamp_ms,
                                           last_log_data.q,
                                           false);
+          json_last_frame_ending(_ctrl_joint_data_streams[id]);
+          
+          _states_robot_seq_id[id]++;
+          flushed++;
+        } else if (frames_written > 0) {
+          // No frames to flush, but we wrote frames during normal operation
+          // The last frame has a trailing comma that needs to be removed
+          // Seek back to remove ",\n" and replace with "\n\t}\n"
+          _ctrl_robot_data_streams[id].seekp(-3, std::ios_base::cur);  // Back 3: },\n
+          _ctrl_robot_data_streams[id] << "\n\t}\n";
+          
+          _ctrl_torque_data_streams[id].seekp(-3, std::ios_base::cur);
+          _ctrl_torque_data_streams[id] << "\n\t}\n";
+          
+          _ctrl_joint_data_streams[id].seekp(-3, std::ios_base::cur);
+          _ctrl_joint_data_streams[id] << "\n\t}\n";
         }
+        
+        // Always close the JSON array
+        json_file_ending(_ctrl_robot_data_streams[id]);
+        json_file_ending(_ctrl_torque_data_streams[id]);
+        json_file_ending(_ctrl_joint_data_streams[id]);
         
         std::cout << header << "Flushed " << flushed << " remaining frames." << std::endl;
         std::cout << header << "Total frames written: " << frames_written + flushed << std::endl;
         
-        json_file_ending(_ctrl_robot_data_streams[id]);
         _ctrl_robot_data_streams[id].close();
-        json_file_ending(_ctrl_torque_data_streams[id]);
         _ctrl_torque_data_streams[id].close();
-        json_file_ending(_ctrl_joint_data_streams[id]);
         _ctrl_joint_data_streams[id].close();
         ctrl_flag_saving = false;
         _states_robot_thread_saving[id] = false;

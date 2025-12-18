@@ -203,7 +203,10 @@ inline void json_frame_ending(std::ostream& os) {
   os << "\t},\n";
 }
 
-inline void json_file_ending(std::ostream& os) {
+inline void json_last_frame_ending(std::ostream& os) {
   os << "\t}\n";
+}
+
+inline void json_file_ending(std::ostream& os) {
   os << "]\n";
 }
