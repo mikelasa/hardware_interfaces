@@ -7,7 +7,7 @@
 #    damping: low damping
 #    max_spring_force_magnitude: 15
 # always check the first few parameters:
-data_folder: "/home/robotlab/data/real/test"  # folder to save data
+data_folder: "/home/robotlab/data/real/box_tilt"  # folder to save data
 mock_hardware: false
 bimanual: false
 
@@ -103,3 +103,7 @@ gamepad0:
   update_rate_hz: 1000
   translation_scale: 5e-5
   rotation_scale: 2.5e-4
+  rumble_force_min_n: 5        # Minimum force to start rumble (N)
+  rumble_force_max_n: 15.0       # Force at max vibration (N)
+  rumble_duration_ms: 200        # Duration per rumble pulse (ms)
+  rumble_refresh_ms: 150.0       # Min time between rumble refreshes (ms)

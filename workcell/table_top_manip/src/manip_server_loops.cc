@@ -1462,6 +1462,14 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     ROTATION_SCALE = _teleop_rotation_scales[id];
   }
 
+  // Haptic feedback parameters from gamepad config
+  const double   RUMBLE_FORCE_MIN_N       = gamepad_ptrs[id]->get_rumble_force_min_n();
+  const double   RUMBLE_FORCE_MAX_N       = gamepad_ptrs[id]->get_rumble_force_max_n();
+  const uint16_t RUMBLE_DURATION_MS       = gamepad_ptrs[id]->get_rumble_duration_ms();
+  const double   RUMBLE_REFRESH_MS        = gamepad_ptrs[id]->get_rumble_refresh_ms();
+  const uint16_t RUMBLE_WEAK              = 0;
+  double last_rumble_ms = -1e9;
+
   // refresh base pose
   RUT::Vector7d base_pose;
   {
@@ -1495,6 +1503,31 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
       ry_scaled = -gp_data.right_stick_y * ROTATION_SCALE;
       //ry_scaled = 0.0;
       rz_scaled = gp_data.right_stick_x * ROTATION_SCALE;
+    }
+
+    // Force-based rumble: strong motor while force norm exceeds threshold
+    RUT::VectorXd wrench_fb_local;
+    {
+      std::lock_guard<std::mutex> lock(_wrench_fb_mtxs[id]);
+      wrench_fb_local = _wrench_fb[id];
+    }
+
+    double force_norm = 0.0;
+    if (wrench_fb_local.size() >= 3) {
+      force_norm = wrench_fb_local.head<3>().norm();
+    }
+    const double now_ms = timer.toc_ms();
+
+    // Scale vibration proportionally to force (3-10N -> 0-65535)
+    double force_above_min = std::max(0.0, force_norm - RUMBLE_FORCE_MIN_N);
+    double force_scaled = std::min(force_above_min, RUMBLE_FORCE_MAX_N - RUMBLE_FORCE_MIN_N) / (RUMBLE_FORCE_MAX_N - RUMBLE_FORCE_MIN_N);
+    uint16_t vibration_magnitude = static_cast<uint16_t>(force_scaled * 65535.0);
+
+    if (vibration_magnitude > 0 && (now_ms - last_rumble_ms) > RUMBLE_REFRESH_MS) {
+      gamepad_ptrs[id]->set_rumble(vibration_magnitude, RUMBLE_WEAK, RUMBLE_DURATION_MS);
+      last_rumble_ms = now_ms;
+    } else if (vibration_magnitude == 0) {
+      gamepad_ptrs[id]->stop_rumble();
     }
 
     // Check for significant movement
@@ -1539,5 +1572,7 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
 
     loop_timer.sleep_till_next();
   }
+
+  gamepad_ptrs[id]->stop_rumble();
 }
 

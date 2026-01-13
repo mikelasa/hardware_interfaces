@@ -61,10 +61,15 @@ struct GamepadData {
 class Gamepad : public TeleopInterface {
  public:
   struct GamepadConfig {
-    std::string device_path{"/dev/input/js0"};  // Default to first joystick
+    std::string device_path{"dev/input/js0"};  // Default to first joystick
     double deadzone_stick{0.2};                 // Deadzone for analog sticks (0-1)
     double deadzone_trigger{0.05};              // Deadzone for triggers (0-1)
     int update_rate_hz{100};                    // Update frequency
+    // Haptic feedback parameters
+    double rumble_force_min_n{3.0};             // Minimum force to start rumble (N)
+    double rumble_force_max_n{10.0};            // Force at max vibration (N)
+    uint16_t rumble_duration_ms{200};           // Duration per rumble pulse (ms)
+    double rumble_refresh_ms{150.0};            // Min time between rumble refreshes (ms)
 
     bool deserialize(const YAML::Node& node) {
       try {
@@ -72,6 +77,10 @@ class Gamepad : public TeleopInterface {
         if (node["deadzone_stick"]) deadzone_stick = node["deadzone_stick"].as<double>();
         if (node["deadzone_trigger"]) deadzone_trigger = node["deadzone_trigger"].as<double>();
         if (node["update_rate_hz"]) update_rate_hz = node["update_rate_hz"].as<int>();
+        if (node["rumble_force_min_n"]) rumble_force_min_n = node["rumble_force_min_n"].as<double>();
+        if (node["rumble_force_max_n"]) rumble_force_max_n = node["rumble_force_max_n"].as<double>();
+        if (node["rumble_duration_ms"]) rumble_duration_ms = node["rumble_duration_ms"].as<uint16_t>();
+        if (node["rumble_refresh_ms"]) rumble_refresh_ms = node["rumble_refresh_ms"].as<double>();
         return true;
       } catch (const std::exception& e) {
         std::cerr << "Gamepad config error: " << e.what() << std::endl;
@@ -94,6 +103,12 @@ class Gamepad : public TeleopInterface {
   // Gamepad-specific methods
   bool get_data(GamepadData& data);
   std::string get_device_info() const;
+
+  // Rumble configuration getters
+  double get_rumble_force_min_n() const { return config_.rumble_force_min_n; }
+  double get_rumble_force_max_n() const { return config_.rumble_force_max_n; }
+  uint16_t get_rumble_duration_ms() const { return config_.rumble_duration_ms; }
+  double get_rumble_refresh_ms() const { return config_.rumble_refresh_ms; }
 
   //force feedback 
   void set_rumble(uint16_t strong, uint16_t weak, uint16_t duration_ms);
