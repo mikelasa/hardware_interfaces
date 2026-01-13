@@ -8,6 +8,7 @@
 #include <linux/joystick.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <dirent.h>
 
 /**
  * GamepadData: Structure to hold Xbox controller input
@@ -94,12 +95,21 @@ class Gamepad : public TeleopInterface {
   bool get_data(GamepadData& data);
   std::string get_device_info() const;
 
+  //force feedback 
+  void set_rumble(uint16_t strong, uint16_t weak, uint16_t duration_ms);
+  void stop_rumble();
+
  private:
   void read_loop();
   void parse_joystick_event(const js_event& event);
   void apply_deadzone(double& value, double threshold);
 
-  int device_fd_{-1};                    // File descriptor for /dev/input/jsX
+  int device_fd_{-1};    // /dev/input/jsX
+  int event_fd_{-1};     // /dev/input/eventX for FF
+  int ff_effect_id_{-1}; // Effect ID for force feedback
+
+  bool open_event_fd_for_js(const std::string& js_path);
+  void close_event_fd();
   GamepadData current_data_;
   GamepadConfig config_;
 

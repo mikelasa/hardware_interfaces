@@ -1449,7 +1449,7 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   GamepadData gp_data;
 
   RUT::Timer loop_timer;
-  loop_timer.set_loop_rate_hz(125);  
+  loop_timer.set_loop_rate_hz(1000);  
   loop_timer.start_timed_loop();
 
   // Scaling factors from YAML
@@ -1491,9 +1491,10 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
       tz_scaled = (gp_data.left_trigger - gp_data.right_trigger) * TRANSLATION_SCALE;
       
       // Right stick to rotation
-      rx_scaled = gp_data.right_stick_x * ROTATION_SCALE;
-      ry_scaled = gp_data.right_stick_y * ROTATION_SCALE;
-      rz_scaled = 0.0;
+      //rx_scaled = gp_data.right_stick_x * ROTATION_SCALE;
+      ry_scaled = -gp_data.right_stick_y * ROTATION_SCALE;
+      //ry_scaled = 0.0;
+      rz_scaled = gp_data.right_stick_x * ROTATION_SCALE;
     }
 
     // Check for significant movement
@@ -1510,32 +1511,24 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
       target_pose(1) += ty_scaled;
       target_pose(2) += tz_scaled;
 
-      // Apply rotation DEACTIVATED FOR SIMPLICITY
-      /*
+      // Apply rotation - accumulate on current target orientation (not base)
       if (angle > 1e-6) {
         Eigen::Vector3d axis(rx_scaled, ry_scaled, rz_scaled);
         if (axis.norm() > 1e-12) {
           axis.normalize();
           Eigen::Quaterniond rot_incr(Eigen::AngleAxisd(angle, axis));
-          Eigen::Quaterniond base_q(base_pose(6), base_pose(3), base_pose(4), base_pose(5));
-          Eigen::Quaterniond new_q = rot_incr * base_q;
+          // Use current target orientation to accumulate rotations
+          Eigen::Quaterniond current_q(target_pose(6), target_pose(3), target_pose(4), target_pose(5));
+          Eigen::Quaterniond new_q = current_q * rot_incr;
           new_q.normalize();
           target_pose(3) = new_q.x();
           target_pose(4) = new_q.y();
           target_pose(5) = new_q.z();
           target_pose(6) = new_q.w();
-        } else {
-          target_pose(3) = base_pose(3);
-          target_pose(4) = base_pose(4);
-          target_pose(5) = base_pose(5);
-          target_pose(6) = base_pose(6);
         }
-      } else {
-        target_pose(3) = base_pose(3);
-        target_pose(4) = base_pose(4);
-        target_pose(5) = base_pose(5);
-        target_pose(6) = base_pose(6);
-      }*/
+      }
+      // NOTE: When stick is released (angle = 0), rotation stays accumulated in target_pose
+      // This prevents the "spring back" effect - the robot maintains its commanded orientation
     } else {
       // keep last target if no significant movement
       target_pose = target_pose;

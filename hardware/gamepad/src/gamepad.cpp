@@ -5,6 +5,12 @@
 #include <cstring>
 #include <cerrno>
 #include <cstdint>
+#include <linux/input.h>
+#include <sys/ioctl.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <dirent.h>
 
 Gamepad::Gamepad() : device_fd_(-1), running_(false), connected_(false) {}
 
@@ -20,6 +26,12 @@ bool Gamepad::init(const GamepadConfig& config) {
     std::cerr << "[Gamepad] Failed to open device " << config_.device_path << "\n";
     perror("open");
     return false;
+  }
+
+  connected_ = true;
+
+  if (!open_event_fd_for_js(config_.device_path)) {
+    std::cout << "[Gamepad] FF not available (event device not opened)\n";
   }
 
   // Get device name
@@ -40,7 +52,6 @@ bool Gamepad::init(const GamepadConfig& config) {
   ioctl(device_fd_, JSIOCGBUTTONS, &buttons);
   std::cout << "[Gamepad] Axes: " << (int)axes << ", Buttons: " << (int)buttons << "\n";
 
-  connected_ = true;
   running_ = true;
   read_thread_ = std::thread(&Gamepad::read_loop, this);
 
@@ -53,6 +64,13 @@ bool Gamepad::cleanup() {
   if (read_thread_.joinable()) {
     read_thread_.join();
   }
+
+  if (ff_effect_id_ >= 0 && event_fd_ >= 0) {
+    ioctl(event_fd_, EVIOCRMFF, ff_effect_id_);
+    ff_effect_id_ = -1;
+  }
+
+  close_event_fd();
 
   if (device_fd_ >= 0) {
     close(device_fd_);
@@ -87,6 +105,63 @@ bool Gamepad::get_data(TeleopData& data) {
   data.buttons = buttons;
   data.timestamp = gp_data.timestamp;
   return true;
+}
+
+void Gamepad::set_rumble(uint16_t strong, uint16_t weak, uint16_t duration_ms) {
+  if (event_fd_ < 0) {
+    std::cerr << "[Gamepad] Rumble failed: event device not open\n";
+    return;
+  }
+
+  struct ff_effect effect;
+  std::memset(&effect, 0, sizeof(effect));
+
+  effect.type = FF_RUMBLE;
+  effect.id = ff_effect_id_;  // reuse previously uploaded effect if any
+
+  effect.u.rumble.strong_magnitude = strong;
+  effect.u.rumble.weak_magnitude = weak;
+
+  effect.replay.length = duration_ms;
+  effect.replay.delay  = 0;
+
+  // Upload effect to the event device
+  if (ioctl(event_fd_, EVIOCSFF, &effect) < 0) {
+    std::cerr << "[Gamepad] Failed to upload rumble effect: "
+              << strerror(errno) << "\n";
+    return;
+  }
+
+  ff_effect_id_ = effect.id;
+
+  // Play effect
+  struct input_event play;
+  std::memset(&play, 0, sizeof(play));
+
+  gettimeofday(&play.time, nullptr);
+  play.type = EV_FF;
+  play.code = effect.id;
+  play.value = 1;  // start
+
+  if (write(event_fd_, &play, sizeof(play)) < 0) {
+    std::cerr << "[Gamepad] Failed to play rumble effect\n";
+  }
+}
+
+void Gamepad::stop_rumble() {
+  if (event_fd_ < 0 || ff_effect_id_ < 0) {
+    return;
+  }
+
+  struct input_event stop;
+  std::memset(&stop, 0, sizeof(stop));
+
+  gettimeofday(&stop.time, nullptr);
+  stop.type = EV_FF;
+  stop.code = static_cast<uint16_t>(ff_effect_id_);
+  stop.value = 0;  // stop
+
+  write(event_fd_, &stop, sizeof(stop));
 }
 
 bool Gamepad::is_connected() const { return connected_.load(); }
@@ -193,5 +268,47 @@ void Gamepad::apply_deadzone(double& value, double threshold) {
     } else {
       value = (value + threshold) / (1.0 - threshold);
     }
+  }
+}
+
+bool Gamepad::open_event_fd_for_js(const std::string& js_path) {
+  // Resolve the matching event device from /sys/class/input/jsX/device/event*
+  const std::string js_name = js_path.substr(js_path.find_last_of('/') + 1);  // e.g. js0
+  const std::string sys_path = "/sys/class/input/" + js_name + "/device/";
+
+  DIR* dir = opendir(sys_path.c_str());
+  if (!dir) {
+    return false;
+  }
+
+  std::string event_name;
+  struct dirent* entry = nullptr;
+  while ((entry = readdir(dir)) != nullptr) {
+    if (std::strncmp(entry->d_name, "event", 5) == 0) {
+      event_name = entry->d_name;
+      break;
+    }
+  }
+  closedir(dir);
+
+  if (event_name.empty()) {
+    return false;
+  }
+
+  const std::string event_path = "/dev/input/" + event_name;
+  int fd = open(event_path.c_str(), O_RDWR | O_NONBLOCK);
+  if (fd < 0) {
+    std::cerr << "[Gamepad] Failed to open FF event device " << event_path << "\n";
+    return false;
+  }
+
+  event_fd_ = fd;
+  return true;
+}
+
+void Gamepad::close_event_fd() {
+  if (event_fd_ >= 0) {
+    close(event_fd_);
+    event_fd_ = -1;
   }
 }

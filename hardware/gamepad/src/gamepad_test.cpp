@@ -56,6 +56,13 @@ int main() {
       if (data.dpad_left != prev_data.dpad_left && data.dpad_left) printf("  D-Pad LEFT pressed\n");
       if (data.dpad_right != prev_data.dpad_right && data.dpad_right) printf("  D-Pad RIGHT pressed\n");
 
+      if (data.button_a) {
+        gamepad.set_rumble(0, 65535, 300); // weak motor on A
+      }
+
+      if (data.button_b) {
+        gamepad.set_rumble(65535, 0, 300); // strong motor on B
+      }
       prev_data = data;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));

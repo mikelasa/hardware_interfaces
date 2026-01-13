@@ -7,7 +7,7 @@
 #    damping: low damping
 #    max_spring_force_magnitude: 15
 # always check the first few parameters:
-data_folder: "/home/robotlab/data/real/test_3"  # folder to save data
+data_folder: "/home/robotlab/data/real/test"  # folder to save data
 mock_hardware: false
 bimanual: false
 
@@ -79,7 +79,7 @@ impedance_controller0:
   log_file_path: "/home/data/controller_log/impedance_controller.log"
   alert_overrun: false
   compliance6d:
-    stiffness: [100, 100, 100, 400, 400, 400]
+    stiffness: [700, 700, 700, 100, 100, 100] # 
     damping: [10, 10, 10, 10, 10 ,10] # applying critical damping: D = 2*sqrt(K*m)
     nullspace_stiffness: [0, 0, 0, 0, 0, 0, 0]
     nullspace_damping: [0, 0, 0, 0, 0, 0, 0]
@@ -98,8 +98,8 @@ spacemouse0:
 
 gamepad0:
   device_path: "/dev/input/js0"
-  deadzone_stick: 0.3
+  deadzone_stick: 0.1
   deadzone_trigger: 0.1
-  update_rate_hz: 200
-  translation_scale: 0.0005
-  rotation_scale: 0.01
+  update_rate_hz: 1000
+  translation_scale: 5e-5
+  rotation_scale: 2.5e-4
