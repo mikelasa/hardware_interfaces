@@ -8,8 +8,8 @@ int main() {
   Mat myImage;                  //Declaring a matrix to load the frames//
   namedWindow("Video Player");  //Declaring the video to show the video//
   char filename[] = "/dev/video0";
-  // VideoCapture cap("usb-Elgato_Elgato_HD60_X_A00XB320216NRW-video-index0");
-  VideoCapture cap("/dev/video0");
+  VideoCapture cap("/dev/v4l/by-id/usb-Elgato_Cam_Link_4K_A29YB55031069F-video-index0");
+  //VideoCapture cap("/dev/video0");
   if (!cap.isOpened()) {  //This section prompt an error message if no video stream is found//
     cout << "No video stream detected" << endl;
     system("pause");

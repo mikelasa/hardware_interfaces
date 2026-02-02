@@ -70,6 +70,7 @@ class Gamepad : public TeleopInterface {
     double rumble_force_max_n{10.0};            // Force at max vibration (N)
     uint16_t rumble_duration_ms{200};           // Duration per rumble pulse (ms)
     double rumble_refresh_ms{150.0};            // Min time between rumble refreshes (ms)
+    double rumble_filter_alpha{0.2};            // Low-pass filter for force (0.0-1.0, lower=smoother)
 
     bool deserialize(const YAML::Node& node) {
       try {
@@ -81,6 +82,7 @@ class Gamepad : public TeleopInterface {
         if (node["rumble_force_max_n"]) rumble_force_max_n = node["rumble_force_max_n"].as<double>();
         if (node["rumble_duration_ms"]) rumble_duration_ms = node["rumble_duration_ms"].as<uint16_t>();
         if (node["rumble_refresh_ms"]) rumble_refresh_ms = node["rumble_refresh_ms"].as<double>();
+        if (node["rumble_filter_alpha"]) rumble_filter_alpha = node["rumble_filter_alpha"].as<double>();
         return true;
       } catch (const std::exception& e) {
         std::cerr << "Gamepad config error: " << e.what() << std::endl;
@@ -109,6 +111,7 @@ class Gamepad : public TeleopInterface {
   double get_rumble_force_max_n() const { return config_.rumble_force_max_n; }
   uint16_t get_rumble_duration_ms() const { return config_.rumble_duration_ms; }
   double get_rumble_refresh_ms() const { return config_.rumble_refresh_ms; }
+  double get_rumble_filter_alpha() const { return config_.rumble_filter_alpha; }
 
   //force feedback 
   void set_rumble(uint16_t strong, uint16_t weak, uint16_t duration_ms);

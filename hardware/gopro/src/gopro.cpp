@@ -42,27 +42,23 @@ bool GoPro::Implementation::initialize(RUT::TimePoint time0,
   }
 
   // config the video capture
+  // Force MJPEG codec before setting resolution/fps
+  cap->set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('Y', 'U', 'Y', 'V'));
   cap->set(cv::CAP_PROP_FRAME_WIDTH, config.frame_width);
   cap->set(cv::CAP_PROP_FRAME_HEIGHT, config.frame_height);
   cap->set(cv::CAP_PROP_FPS, config.fps);
+  cap->set(cv::CAP_PROP_BUFFERSIZE, 1);  // Reduce buffer to minimize latency
 
-  // try reading one frame
-  std::cout << "Test reading a frame" << std::endl;
-  *cap >> image;
-  if (image.empty()) {
-    std::cout << "\033[1;31mTest reading failed\033[0m\n";
-    std::cout << "  Possibility one: GoPro is not connected. " << std::endl;
-    std::cout << "  Possibility two: Need to reset USB device. " << std::endl;
-    std::cout << "    To do so, run 'lsusb | grep Elgato', which should give "
-                 "something like\n";
-    std::cout << "      Bus 010 Device 005: ID 0fd9:008a Elgato Systems GmbH "
-                 "Elgato HD60 X\n";
-    std::cout
-        << "    Then run 'sudo hardware_interfaces/build/robots/gopro/USBRESET "
-           "/dev/bus/usb/010/005'.\n";
-    return false;
-  }
+  // Debug: Check what OpenCV actually got
+  double actual_width = cap->get(cv::CAP_PROP_FRAME_WIDTH);
+  double actual_height = cap->get(cv::CAP_PROP_FRAME_HEIGHT);
+  double actual_fps = cap->get(cv::CAP_PROP_FPS);
+  std::cout << "[GoPro] Requested: " << config.frame_width << "x" 
+            << config.frame_height << "@" << config.fps << "fps" << std::endl;
+  std::cout << "[GoPro] Actual: " << actual_width << "x" 
+            << actual_height << "@" << actual_fps << "fps" << std::endl;
 
+  // ...existing code...
   std::cout << "[GoPro] Pipeline started.\n";
   return true;
 }

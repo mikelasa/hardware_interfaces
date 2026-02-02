@@ -1080,6 +1080,10 @@ void ManipServer::rgb_loop(const RUT::TimePoint& time0, int id) {
 
   RUT::Timer timer;
   timer.tic(time0);
+  
+  RUT::Timer loop_timer;
+  loop_timer.set_loop_rate_hz(60);  // Match camera FPS
+  loop_timer.start_timed_loop();
   double time_start = timer.toc_ms();
   {
     std::lock_guard<std::mutex> lock(_ctrl_mtx);
@@ -1156,7 +1160,8 @@ void ManipServer::rgb_loop(const RUT::TimePoint& time0, int id) {
 void ManipServer::rgb_plot_loop() {
   std::string header = "[ManipServer][plot thread]: ";
   std::cout << header << "starting thread." << std::endl;
-  cv::namedWindow("RGB", cv::WINDOW_AUTOSIZE);
+  cv::namedWindow("RGB", cv::WINDOW_NORMAL);
+  cv::resizeWindow("RGB", 1200, 1000);
   std::vector<cv::Mat> color_mat_copy;
   cv::Mat canvas;
 
@@ -1437,6 +1442,7 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
         break;
       }
     }
+    
     retry_count++;
     if (retry_count > 100) {
       std::cerr << header << "Timeout waiting for robot feedback. Exiting.\n";
@@ -1467,8 +1473,14 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   const double   RUMBLE_FORCE_MAX_N       = gamepad_ptrs[id]->get_rumble_force_max_n();
   const uint16_t RUMBLE_DURATION_MS       = gamepad_ptrs[id]->get_rumble_duration_ms();
   const double   RUMBLE_REFRESH_MS        = gamepad_ptrs[id]->get_rumble_refresh_ms();
+  const double   RUMBLE_FILTER_ALPHA      = gamepad_ptrs[id]->get_rumble_filter_alpha();
+  const double   RUMBLE_HYSTERESIS_N      = 1.0;   // Deadband around threshold to avoid chatter
+  const double   RUMBLE_BIAS_ALPHA        = 0.002; // Slow baseline tracker to cancel quasi-static offsets
   const uint16_t RUMBLE_WEAK              = 0;
   double last_rumble_ms = -1e9;
+  double force_norm_filtered = 0.0;  // Low-pass filtered force
+  double force_bias = 0.0;            // Slow bias estimate
+  bool rumble_active = false;
 
   // refresh base pose
   RUT::Vector7d base_pose;
@@ -1518,15 +1530,38 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     }
     const double now_ms = timer.toc_ms();
 
-    // Scale vibration proportionally to force (3-10N -> 0-65535)
-    double force_above_min = std::max(0.0, force_norm - RUMBLE_FORCE_MIN_N);
-    double force_scaled = std::min(force_above_min, RUMBLE_FORCE_MAX_N - RUMBLE_FORCE_MIN_N) / (RUMBLE_FORCE_MAX_N - RUMBLE_FORCE_MIN_N);
-    uint16_t vibration_magnitude = static_cast<uint16_t>(force_scaled * 65535.0);
+    // Apply low-pass filter to smooth noisy force measurements
+    force_norm_filtered = RUMBLE_FILTER_ALPHA * force_norm + (1.0 - RUMBLE_FILTER_ALPHA) * force_norm_filtered;
 
-    if (vibration_magnitude > 0 && (now_ms - last_rumble_ms) > RUMBLE_REFRESH_MS) {
+    // Track slow-varying bias (gravity/friction offsets) only near the threshold
+    if (force_norm_filtered < RUMBLE_FORCE_MIN_N + RUMBLE_HYSTERESIS_N) {
+      force_bias = (1.0 - RUMBLE_BIAS_ALPHA) * force_bias + RUMBLE_BIAS_ALPHA * force_norm_filtered;
+    }
+
+    const double force_corrected = std::max(0.0, force_norm_filtered - force_bias);
+
+    // Hysteresis to avoid on/off chatter around the threshold
+    const double rumble_on_threshold  = RUMBLE_FORCE_MIN_N;
+    const double rumble_off_threshold = std::max(0.0, RUMBLE_FORCE_MIN_N - RUMBLE_HYSTERESIS_N);
+
+    if (force_corrected >= rumble_on_threshold) {
+      rumble_active = true;
+    } else if (force_corrected <= rumble_off_threshold) {
+      rumble_active = false;
+    }
+
+    uint16_t vibration_magnitude = 0;
+    if (rumble_active) {
+      double force_above_min = std::max(0.0, force_corrected - RUMBLE_FORCE_MIN_N);
+      double force_scaled = std::min(force_above_min, RUMBLE_FORCE_MAX_N - RUMBLE_FORCE_MIN_N) /
+                            (RUMBLE_FORCE_MAX_N - RUMBLE_FORCE_MIN_N);
+      vibration_magnitude = static_cast<uint16_t>(force_scaled * 65535.0);
+    }
+
+    if (rumble_active && vibration_magnitude > 0 && (now_ms - last_rumble_ms) > RUMBLE_REFRESH_MS) {
       gamepad_ptrs[id]->set_rumble(vibration_magnitude, RUMBLE_WEAK, RUMBLE_DURATION_MS);
       last_rumble_ms = now_ms;
-    } else if (vibration_magnitude == 0) {
+    } else if (!rumble_active || vibration_magnitude == 0) {
       gamepad_ptrs[id]->stop_rumble();
     }
 
