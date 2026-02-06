@@ -170,14 +170,14 @@ bool FRANKA::Implementation::initialize(RUT::TimePoint time0, const FRANKA::FRAN
         setLoad(this->config.tcp_mass, this->config.fx_c_load, this->config.tcp_inertia);
 
         // Set collision detection thresholds
-        const std::array<double, 7> lower_torque_thresholds_acceleration{{100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0}};
-        const std::array<double, 7> upper_torque_thresholds_acceleration{{100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0}};
-        const std::array<double, 7> lower_torque_thresholds_nominal{{100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0}};
-        const std::array<double, 7> upper_torque_thresholds_nominal{{100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0}};
-        const std::array<double, 6> lower_force_thresholds_acceleration{{100.0, 100.0, 100.0, 100.0, 100.0, 100.0}};
-        const std::array<double, 6> upper_force_thresholds_acceleration{{100.0, 100.0, 100.0, 100.0, 100.0, 100.0}};
-        const std::array<double, 6> lower_force_thresholds_nominal{{100.0, 100.0, 100.0, 100.0, 100.0, 100.0}};
-        const std::array<double, 6> upper_force_thresholds_nominal{{100.0, 100.0, 100.0, 100.0, 100.0, 100.0}};
+        const std::array<double, 7> lower_torque_thresholds_acceleration{{40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0}};
+        const std::array<double, 7> upper_torque_thresholds_acceleration{{40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0}};
+        const std::array<double, 7> lower_torque_thresholds_nominal{{40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0}};
+        const std::array<double, 7> upper_torque_thresholds_nominal{{40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0}};
+        const std::array<double, 6> lower_force_thresholds_acceleration{{40.0, 40.0, 40.0, 40.0, 40.0, 40.0}};
+        const std::array<double, 6> upper_force_thresholds_acceleration{{40.0, 40.0, 40.0, 40.0, 40.0, 40.0}};
+        const std::array<double, 6> lower_force_thresholds_nominal{{40.0, 40.0, 40.0, 40.0, 40.0, 40.0}};
+        const std::array<double, 6> upper_force_thresholds_nominal{{40.0, 40.0, 40.0, 40.0, 40.0, 40.0}};
 
         setCollisionBehavior(lower_torque_thresholds_acceleration,
                              upper_torque_thresholds_acceleration,
