@@ -7,13 +7,55 @@ ManipServer::ManipServer(const std::string& config_path) {
 
 ManipServer::~ManipServer() {}
 
+// =============================================================================
+// INITIALIZATION FUNCTION - MANIP SERVER SETUP
+// =============================================================================
+//
+// Purpose: Complete system initialization for robotic manipulation workcell
+//          Sets up all hardware interfaces, controllers, buffers, and threads
+//
+// Initialization Sequence:
+//   1. Load and parse YAML configuration file
+//   2. Determine robot configuration (single arm vs bimanual)
+//   3. Initialize hardware interfaces (robots, grippers, cameras, sensors)
+//   4. Initialize control algorithms (admittance/impedance controllers)
+//   5. Initialize teleoperation devices (gamepad/spacemouse)
+//   6. Create data buffers for sensor streams
+//   7. Initialize mutexes for thread safety
+//   8. Initialize thread status tracking variables
+//   9. Initialize logging buffers for lock-free data recording
+//   10. Launch all control/sensing threads
+//   11. Wait for all threads to signal ready
+//
+// Thread Safety:
+//   - All shared buffers protected by mutexes
+//   - Lock-free circular buffers for high-frequency logging
+//   - Thread status flags synchronized with mutex
+//
+// Error Handling:
+//   - Returns false on any initialization failure
+//   - Prints detailed error messages for debugging
+//   - Safe to retry initialization after fixing issues
+//
+// =============================================================================
+
 bool ManipServer::initialize(const std::string& config_path) {
   std::cout << "[ManipServer] Initializing.\n";
 
-  // start timer to measure setup time
+  // ============================================================================
+  // Step 1: Start Global Timer for Synchronized Timestamps
+  // ============================================================================
+  // This timestamp (time0) will be shared across all threads to ensure
+  // consistent time references throughout the system
+  
   RUT::TimePoint time0 = _timer.tic();
 
-  // read config files
+  // ============================================================================
+  // Step 2: Load and Parse Configuration File
+  // ============================================================================
+  // Configuration file contains all hardware addresses, control parameters,
+  // and system settings in YAML format
+  
   std::cout << "[ManipServer] Reading config files.\n";
   YAML::Node config;
   try {
@@ -24,7 +66,12 @@ bool ManipServer::initialize(const std::string& config_path) {
     return false;
   }
 
-  // sets ID for each robot if bimanual
+  // ============================================================================
+  // Step 3: Determine Robot Configuration (Single vs Bimanual)
+  // ============================================================================
+  // _id_list contains indices for each robot arm in the system
+  // Single arm: {0}, Bimanual: {0, 1}
+  
   if (_config.bimanual) {
     _id_list = {0, 1};
   } else {
@@ -33,19 +80,32 @@ bool ManipServer::initialize(const std::string& config_path) {
 
   std::cout << "_id_list: " << _id_list.size() << std::endl;
 
-  // parameters to be obtained from config
+  // Storage for force sensor publish rates (determined during hardware init)
   std::vector<int> wrench_publish_rate;
 
   std::cout << "[ManipServer] bimanual: " << _config.bimanual << std::endl;
   std::cout << "[ManipServer] Initialize each hardware interface.\n";
 
-  // initialize hardwares
-  // if not using mock hardware
+  // ============================================================================
+  // Step 4: Initialize Hardware Interfaces (Real Hardware Mode)
+  // ============================================================================
+  // For each robot in the system, initialize:
+  //   - Robot interface (Franka Panda or UR via RTDE)
+  //   - End-of-arm tool / gripper (WSG gripper)
+  //   - Camera (GoPro or RealSense)
+  //   - Force/torque sensor (ATI NetFT, Robotiq, CoinFT, or joint sensors)
+  //
+  // Each hardware interface is stored in a shared_ptr vector for safe memory management
+  // Configuration parameters are loaded from YAML for each device
+  
   if (!_config.mock_hardware) {
     for (int id : _id_list) {
-      // Robot
+      // ------------------------------------------------------------------------
+      // 4a. Robot Interface Initialization
+      // ------------------------------------------------------------------------
+      
       if (_config.robot_selection == RobotSelection::UR_RTDE) {
-        // UR Robot initialization
+        // UR Robot initialization (RTDE real-time control interface)
         URRTDE::URRTDEConfig robot_config;
         try {
           robot_config.deserialize(config["ur_rtde" + std::to_string(id)]);
@@ -62,7 +122,7 @@ bool ManipServer::initialize(const std::string& config_path) {
           return false;
         }
       } else if (_config.robot_selection == RobotSelection::FRANKA) {
-        // Franka Robot initialization
+        // Franka Panda initialization (FCI real-time control interface)
         FRANKA::FRANKAConfig robot_config;
         try {
           robot_config.deserialize(config["franka" + std::to_string(id)]);
@@ -84,7 +144,11 @@ bool ManipServer::initialize(const std::string& config_path) {
         return false;
       }
 
-      // EoAT - WSG Gripper
+      // ------------------------------------------------------------------------
+      // 4b. End-of-Arm Tool (EoAT) - Gripper Initialization
+      // ------------------------------------------------------------------------
+      // WSG gripper with position and force control capabilities
+      
       if (_config.run_eoat_thread) {
         // only initialize if the thread is running
         WSGGripper::WSGGripperConfig eoat_config;
@@ -105,7 +169,11 @@ bool ManipServer::initialize(const std::string& config_path) {
         }
       }
 
-      // Camera
+      // ------------------------------------------------------------------------
+      // 4c. Camera Initialization
+      // ------------------------------------------------------------------------
+      // Supports GoPro (USB) or RealSense (depth + RGB) cameras
+      
       // first confirm which camera is being used
       if (_config.camera_selection == CameraSelection::GOPRO) {
         GoPro::GoProConfig gopro_config;
@@ -147,6 +215,15 @@ bool ManipServer::initialize(const std::string& config_path) {
         return false;
       }
 
+      // ------------------------------------------------------------------------
+      // 4d. Force/Torque Sensor Initialization
+      // ------------------------------------------------------------------------
+      // Multiple sensor options supported:
+      //   - ATI NetFT: Ethernet-based 6-axis F/T sensor
+      //   - Robotiq FT Modbus: Modbus TCP F/T sensor
+      //   - CoinFT: Custom force sensor
+      //   - Joint Sensors: Use robot's internal joint torque measurements
+      
       // force sensor
       if (_config.force_sensing_mode == ForceSensingMode::FORCE_MODE_ATI) {
         ATINetft::ATINetftConfig ati_config;
@@ -204,9 +281,9 @@ bool ManipServer::initialize(const std::string& config_path) {
         }
         wrench_publish_rate.push_back(coinft_config.publish_rate);
       } else if (_config.force_sensing_mode == ForceSensingMode::JOINT_SENSORS) {
-        //uses robot's internal joint torque sensors, so no config needed
-        //instead create a mock force sensor
-        std::cout << "[Force sensor]Using joint torque sensors for force sensing." << std::endl;
+        // Uses robot's internal joint torque sensors, so no external hardware config needed
+        // Joint torque loop will republish data from robot control thread
+        std::cout << "[Force sensor] Using joint torque sensors for force sensing." << std::endl;
 
       } else {
         std::cerr << "Invalid force sensing mode. Exiting." << std::endl;
@@ -214,16 +291,40 @@ bool ManipServer::initialize(const std::string& config_path) {
       }
     }
   } else {
+    // ============================================================================
+    // Step 4 (Alternative): Mock Hardware Mode
+    // ============================================================================
+    // For testing without physical hardware, use high dummy publish rate
+    
     // mock hardware, if true then the publish rate of wrench is just 7kHz
     for (int id : _id_list) {
       wrench_publish_rate.push_back(7000);
     }
   }
 
+  // ============================================================================
+  // Step 5: Initialize Control Algorithms
+  // ============================================================================
+  // Two controller types supported:
+  //   - Admittance Controller: Velocity-based Cartesian control (for UR robots)
+  //   - Impedance Controller: Torque-based joint control (for Franka Panda)
+  //
+  // For each robot arm, initialize:
+  //   - Controller instance with configuration parameters
+  //   - Mutex for thread-safe controller access
+  //   - Stiffness/damping matrices (high for position hold, low for free motion)
+  //   - Force-controlled axis settings (compliance direction)
+  
   // initialize Admittance controller, for each arm in id_list
   for (int id : _id_list) {
     if (_config.controller_selection == ControllerSelection::ADMITTANCE_CONTROLLER) 
     {
+      // ------------------------------------------------------------------------
+      // 5a. Admittance Controller Setup (Velocity-Based Cartesian Control)
+      // ------------------------------------------------------------------------
+      // Used primarily with UR robots via RTDE interface
+      // Control law: δx = K^-1 * F_ext (velocity from force)
+      
       // create a new instance of the AdmittanceController
     AdmittanceController::AdmittanceControllerConfig admittance_config;
     try {
@@ -241,7 +342,7 @@ bool ManipServer::initialize(const std::string& config_path) {
     _controller_mtxs.emplace_back();
 
     // gets the current pose of robot to use as initial pose
-    //then initializes the controller with time, config parameters and pose
+    // then initializes the controller with time, config parameters and pose
     RUT::Vector7d pose = RUT::Vector7d::Zero();
     if (!_config.mock_hardware) {
       robot_ptrs[id]->getCartesian(pose);
@@ -259,7 +360,8 @@ bool ManipServer::initialize(const std::string& config_path) {
     int n_af = 0;
     _admittance_controllers[id].setForceControlledAxis(Tr, n_af);
 
-    //values for stiffness and damping taken from config
+    // Store high/low stiffness and damping values for position hold vs free motion
+    // values for stiffness and damping taken from config
     _stiffnesses_high.push_back(admittance_config.compliance6d.stiffness);
     _stiffnesses_low.push_back(RUT::Matrix6d::Zero());
     _dampings_high.push_back(admittance_config.compliance6d.damping);
@@ -268,6 +370,12 @@ bool ManipServer::initialize(const std::string& config_path) {
 
     else if (_config.controller_selection == ControllerSelection::IMPEDANCE_CONTROLLER) 
     {
+      // ------------------------------------------------------------------------
+      // 5b. Impedance Controller Setup (Torque-Based Joint Control)
+      // ------------------------------------------------------------------------
+      // Used primarily with Franka Panda robot
+      // Control law: τ = J^T * (K*(x_ref - x) + D*(ẋ_ref - ẋ))
+      
       // create a new instance of the ImpedanceController
       ImpedanceController::ImpedanceControllerConfig impedance_config;
       try {
@@ -285,7 +393,7 @@ bool ManipServer::initialize(const std::string& config_path) {
     _controller_mtxs.emplace_back();
 
     // gets the current pose of robot to use as initial pose
-    //then initializes the controller with time, config parameters and pose
+    // then initializes the controller with time, config parameters and pose
     RUT::Vector7d pose = RUT::Vector7d::Zero();
     if (!_config.mock_hardware) {
       robot_ptrs[id]->getCartesian(pose);
@@ -308,7 +416,8 @@ bool ManipServer::initialize(const std::string& config_path) {
     int n_af = 0;
     _impedance_controllers[id].setForceControlledAxis(Tr, n_af);
 
-    //values for stiffness and damping taken from config
+    // Store high/low stiffness and damping values for position hold vs free motion
+    // values for stiffness and damping taken from config
     _stiffnesses_high.push_back(impedance_config.compliance6d.stiffness);
     _stiffnesses_low.push_back(RUT::Matrix6d::Zero());
     _dampings_high.push_back(impedance_config.compliance6d.damping);
@@ -317,6 +426,16 @@ bool ManipServer::initialize(const std::string& config_path) {
     }
   }
 
+  // ============================================================================
+  // Step 6: Initialize Teleoperation Devices
+  // ============================================================================
+  // Supports gamepad (Xbox/PlayStation) for manual robot control
+  // Configuration includes:
+  //   - Device path (e.g., /dev/input/js0)
+  //   - Deadzone settings (stick/trigger thresholds)
+  //   - Update rate (polling frequency)
+  //   - Translation and rotation scaling factors
+  
   // Initialize Gamepad devices for teleoperation if enabled
   std::cout << "[ManipServer] Initializing teleoperation devices.\n";
   if (_config.teleop_device == TeleopSelection::GAMEPAD) {
@@ -361,6 +480,23 @@ bool ManipServer::initialize(const std::string& config_path) {
   }
       
 
+  // ============================================================================
+  // Step 7: Create Data Buffers for Sensor Streams
+  // ============================================================================
+  // Each sensor stream (camera, pose, force, etc.) has:
+  //   - Circular buffer for efficient memory management
+  //   - Timestamp buffer for synchronization
+  //   - Configurable size based on frequency and retention needs
+  //
+  // Buffer types:
+  //   - camera_rgb_buffers: RGB frames (large, 60Hz)
+  //   - pose_buffers: End-effector pose (7D, 1kHz)
+  //   - vel_buffers: Cartesian velocity (6D, 1kHz)
+  //   - wrench_buffers: Force/torque (6D, variable rate)
+  //   - robot_wrench_buffers: Internal joint torques (6D, 1kHz)
+  //   - waypoints_buffers: Commanded waypoints (7D, variable)
+  //   - stiffness_buffers: Compliance matrices (6x6, variable)
+  
   // create the data buffers
   // each variable is saved using DataBuffer, which is a thread-safe circular buffer
   // the buffers are initialized with the appropriate sizes and names
@@ -403,12 +539,12 @@ bool ManipServer::initialize(const std::string& config_path) {
     _eoat_buffers[id].initialize(_config.eoat_buffer_size, 2, 1,  // pos, force
                                  "eoat" + std::to_string(id));
     _wrench_buffers[id].initialize(_config.wrench_buffer_size,
-                                   6 * num_ft_sensors, 1,
+                                   6 * num_ft_sensors, 1,  // FxFyFz TxTyTz per sensor
                                    "wrench" + std::to_string(id));
     _robot_wrench_buffers[id].initialize(_config.robot_buffer_size, 6, 1,
                                          "robot_wrench" + std::to_string(id));
 
-    _waypoints_buffers[id].initialize(-1, 7, 1,
+    _waypoints_buffers[id].initialize(-1, 7, 1,  // -1 = unbounded size
                                       "waypoints" + std::to_string(id));
     _eoat_waypoints_buffers[id].initialize(
         -1, 2, 1, "eoat_waypoints" + std::to_string(id));
@@ -441,6 +577,12 @@ bool ManipServer::initialize(const std::string& config_path) {
         -1, 1, 1, "stiffness" + std::to_string(id) + "_timestamp_ms");
   }
 
+  // ============================================================================
+  // Step 8: Initialize Buffer Mutexes for Thread Safety
+  // ============================================================================
+  // Each buffer needs a mutex to prevent race conditions when multiple threads
+  // read/write simultaneously (e.g., control thread writes, logging thread reads)
+  
   // initialize the buffer mutexes
   for (int id : _id_list) {
     _camera_rgb_buffer_mtxs.emplace_back();
@@ -454,6 +596,14 @@ bool ManipServer::initialize(const std::string& config_path) {
     _stiffness_buffer_mtxs.emplace_back();
   }
 
+  // ============================================================================
+  // Step 9: Initialize Thread Status Tracking Variables
+  // ============================================================================
+  // These flags coordinate thread lifecycle and data logging:
+  //   - _ready flags: Thread has completed initialization and is running
+  //   - _saving flags: Thread is currently writing data to disk
+  //   - _seq_id: Sequence number for data frame ordering
+  
   // initialize thread status variables
   // indicates the state of each thread
   for (int id : _id_list) {
@@ -472,6 +622,16 @@ bool ManipServer::initialize(const std::string& config_path) {
     _states_logging_thread_ready.push_back(false);
   }
 
+  // ============================================================================
+  // Step 10: Initialize Lock-Free Logging Buffers
+  // ============================================================================
+  // High-frequency (1kHz) control loops cannot afford mutex locking for logging
+  // Lock-free circular buffers allow non-blocking writes from real-time threads
+  // Separate logging thread consumes data asynchronously at lower frequency
+  //
+  // Buffer sized for 10 seconds @ 1kHz = 10,000 samples
+  // Overflow flag signals when buffer is full (data loss indicator)
+  
   // initialize logging buffers for lock-free logging (10 seconds at 1kHz)
   for (int id : _id_list) {
     RUT::DataBuffer<RobotLogData> buffer;
@@ -481,6 +641,15 @@ bool ManipServer::initialize(const std::string& config_path) {
     _logging_buffer_overflow.emplace_back(false);
   }
 
+  // ============================================================================
+  // Step 11: Initialize Additional Shared Variables
+  // ============================================================================
+  // Miscellaneous shared state variables for inter-thread communication:
+  //   - File stream handles for data logging
+  //   - OpenCV Mat storage for camera frames
+  //   - Feedback pose/wrench for external access
+  //   - Timestamp vectors for data synchronization
+  
   // initialize additional shared variables
   for (int id : _id_list) {
     _ctrl_rgb_folders.push_back("");
@@ -502,6 +671,21 @@ bool ManipServer::initialize(const std::string& config_path) {
     _wrench_timestamps_ms.push_back(Eigen::VectorXd());
     _robot_wrench_timestamps_ms.push_back(Eigen::VectorXd());
   }
+
+  // ============================================================================
+  // Step 12: Launch All Control and Sensing Threads
+  // ============================================================================
+  // Thread architecture:
+  //   - RGB threads: Camera capture @ 60Hz
+  //   - Robot threads: Real-time control @ 1kHz (impedance) or 500Hz (admittance)
+  //   - Logging threads: Asynchronous file I/O @ 200Hz (decoupled from control)
+  //   - Wrench threads: Force sensor polling @ sensor-dependent rate
+  //   - EoAT threads: Gripper control @ 100Hz
+  //   - Teleop threads: Gamepad input @ 1kHz with haptic feedback
+  //   - Plot thread: OpenCV visualization (optional, after 1s delay)
+  //
+  // All threads share time0 for synchronized timestamps
+  // Threads signal ready via _states_*_thread_ready flags
 
   /*
     launch the threads and calls to their respective loops in manip_server_loops.cpp:
@@ -533,11 +717,13 @@ bool ManipServer::initialize(const std::string& config_path) {
                                   std::ref(time0), id);
     }
     if (_config.run_wrench_thread && _config.force_sensing_mode != ForceSensingMode::JOINT_SENSORS) {
+      // External force sensor (ATI, Robotiq, CoinFT)
       _wrench_threads.emplace_back(&ManipServer::ext_sensor_wrench_loop, this,
                                    std::ref(time0), wrench_publish_rate[id],
                                    id);
     }else if (_config.run_wrench_thread && _config.force_sensing_mode == ForceSensingMode::JOINT_SENSORS) {
-      //if using joint torque sensors, launch the joint torque loop instead
+      // Internal joint torque sensors (republish from robot thread)
+      // if using joint torque sensors, launch the joint torque loop instead
       _wrench_threads.emplace_back(&ManipServer::joint_sensor_wrench_loop, this,
                                   std::ref(time0), _config.joint_sensor_frequency, id);
     }
@@ -552,10 +738,18 @@ bool ManipServer::initialize(const std::string& config_path) {
   }
   if (_config.plot_rgb) {
     // pause 1s, then start the rgb plot thread
+    // Delay ensures camera thread has populated initial frames before visualization starts
     std::this_thread::sleep_for(std::chrono::seconds(1));
     _rgb_plot_thread = std::thread(&ManipServer::rgb_plot_loop, this);
   }
 
+  // ============================================================================
+  // Step 13: Wait for All Threads to Signal Ready
+  // ============================================================================
+  // Polling loop checks all thread ready flags before proceeding
+  // Ensures complete initialization before external control begins
+  // 200ms check interval balances responsiveness with CPU usage
+  
   // wait for threads to be ready
   std::cout << "[ManipServer] Waiting for threads to be ready.\n";
   while (true) {
@@ -582,6 +776,11 @@ bool ManipServer::initialize(const std::string& config_path) {
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
+  
+  // ============================================================================
+  // Initialization Complete
+  // ============================================================================
+  
   std::cout << "[ManipServer] All threads are ready." << std::endl;
   std::cout << "[ManipServer] Done initialization." << std::endl;
   return true;
@@ -858,6 +1057,42 @@ void ManipServer::clear_cmd_buffer() {
   }
 }
 
+// =============================================================================
+// WAYPOINT SCHEDULING ALGORITHM
+// =============================================================================
+//
+// Purpose: Add timed waypoints to execution buffer with intelligent merging
+//          Ensures smooth trajectory execution by managing past/future waypoints
+//
+// System Architecture:
+//   1. _waypoints_buffer contains waypoints NOT YET scheduled for execution
+//   2. interpolation_controller consumes oldest N points from buffer
+//   3. This function adds new waypoints following 3-step merge algorithm
+//
+// Algorithm Steps:
+//   Step A: Remove input waypoints that are already in the past
+//           → Prevents scheduling waypoints that can never be executed
+//   
+//   Step B: Remove existing buffered waypoints newer than input waypoints
+//           → Allows newer commands to override older scheduled motions
+//           → Enables reactive trajectory replanning
+//   
+//   Step C: Append remaining valid input waypoints to buffer
+//           → Maintains chronological order for smooth interpolation
+//           → Preserves waypoints that should still execute
+//
+// Thread Safety:
+//   - Mutex-protected buffer access (_waypoints_buffer_mtxs)
+//   - Atomic buffer size operations
+//   - Safe for concurrent calls from multiple threads
+//
+// Input Validation:
+//   - Waypoints must be 7D vectors (x,y,z, qx,qy,qz,qw)
+//   - Timepoints must match number of waypoints
+//   - All checks performed before modification
+//
+// =============================================================================
+
 /*
   1. Points in _waypoints_buffer are not yet scheduled to be executed. 
   2. interpolation_controller will take the oldest N points away from _waypoints_buffer and _waypoints_timestamp_ms_buffer 
@@ -872,6 +1107,11 @@ void ManipServer::schedule_waypoints(const Eigen::MatrixXd& waypoints,
                                      const Eigen::VectorXd& timepoints_ms,
                                      int robot_id) {
   double curr_time = _timer.toc_ms();
+  
+  // ============================================================================
+  // Input Validation
+  // ============================================================================
+  
   // check the shape of inputs
   if (waypoints.rows() != 7) {
     std::cerr << "[ManipServer][schedule_waypoints] Waypoints should have 7 "
@@ -895,6 +1135,13 @@ void ManipServer::schedule_waypoints(const Eigen::MatrixXd& waypoints,
   std::cout << "[ManipServer][schedule_waypoints] curr_time: " << curr_time
             << std::endl;
 #endif
+  
+  // ============================================================================
+  // Step A: Remove Input Waypoints That Are in the Past
+  // ============================================================================
+  // Find first waypoint with timestamp > current time
+  // All waypoints before this index are already past their execution time
+  
   /*
    * a. Get rid of input waypoints that are in the past
    */
@@ -907,11 +1154,20 @@ void ManipServer::schedule_waypoints(const Eigen::MatrixXd& waypoints,
   }
   if (input_id_start >= timepoints_ms.size()) {
     // all input points are in the past. Do nothing.
+    // Early return: no valid waypoints to schedule
     return;
   }
 
   {
     std::lock_guard<std::mutex> lock(_waypoints_buffer_mtxs[robot_id]);
+    
+    // ============================================================================
+    // Step B: Remove Existing Waypoints Newer Than Input Waypoints
+    // ============================================================================
+    // This allows new commands to override previously scheduled future motions
+    // Find first existing waypoint with timestamp > earliest valid input
+    // Keep all waypoints before this point, discard everything after
+    
     /*
    * b. Get rid of existing waypoints that are newer than input waypoints
    */
@@ -930,6 +1186,12 @@ void ManipServer::schedule_waypoints(const Eigen::MatrixXd& waypoints,
     assert(_waypoints_buffers[robot_id].size() ==
            _waypoints_timestamp_ms_buffers[robot_id].size());
 
+    // ============================================================================
+    // Step C: Append Remaining Valid Input Waypoints
+    // ============================================================================
+    // Add all waypoints from input_id_start to end
+    // Maintains chronological order for smooth trajectory generation
+    
     /*
    * c. Add remaining of a to the end of b
    */
