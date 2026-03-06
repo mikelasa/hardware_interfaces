@@ -2173,6 +2173,10 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   RUT::Vector7d target_pose = current_pose;  // Accumulates teleop commands
   GamepadData gp_data;                       // Current gamepad state
 
+  // Reference frame toggle (WORLD ↔ TCP)
+  bool use_tcp_frame = false;
+  bool a_prev = false;
+
   // ============================================================================
   // Step 5: Initialize Loop Timing
   // ============================================================================
@@ -2275,9 +2279,23 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     
     if (gamepad_ptrs[id]->get_data(gp_data)) {
       gamepad_input_count++;
+
+      // =====================================================================
+      // Phase 2a: Toggle Reference Frame on A-Button Rising Edge
+      // =====================================================================
+      // Press A to switch between WORLD and TCP frames
+      // Useful for whiteboard erasing: use TCP frame when in contact
+      
+      const bool a_now = gp_data.button_a;
+      if (a_now && !a_prev) {
+        use_tcp_frame = !use_tcp_frame;
+        std::cout << header << "Reference frame toggled: "
+                  << (use_tcp_frame ? "TCP" : "WORLD") << std::endl;
+      }
+      a_prev = a_now;
       
       // =====================================================================
-      // Phase 2a: Process Translation Input
+      // Phase 2b: Process Translation Input
       // =====================================================================
       // Left stick → X/Y translation (with scaling)
       // Triggers → Z translation (up with LT, down with RB)
@@ -2287,7 +2305,7 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
       tz_scaled = (gp_data.left_trigger - gp_data.right_trigger) * TRANSLATION_SCALE;
       
       // =====================================================================
-      // Phase 2b: Process Rotation Input
+      // Phase 2c: Process Rotation Input
       // =====================================================================
       // Right stick → Yaw/roll rotation (with scaling)
       // Note: rx_scaled commented out (pitch disabled to prevent gimbal issues)
@@ -2405,36 +2423,64 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     if (tx_norm > MOTION_THRESHOLD || ty_norm > MOTION_THRESHOLD || 
         tz_norm > MOTION_THRESHOLD || angle > ROTATION_THRESHOLD) {
       
-      // =====================================================================
-      // Phase 6a: Apply Translation
-      // =====================================================================
-      // Incremental Cartesian translation
+      // Extract current target orientation as quaternion (used in both frames)
+      Eigen::Quaterniond current_q(target_pose(6),    // w
+                                   target_pose(3),    // x
+                                   target_pose(4),    // y
+                                   target_pose(5));   // z
+
+      // Use feedback orientation for TCP mapping to match the real tool pose
+      Eigen::Quaterniond tcp_q = current_q;
+      if (use_tcp_frame) {
+        RUT::Vector7d pose_fb_local;
+        {
+          std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
+          pose_fb_local = _poses_fb[id];
+        }
+        // Swap x-y and negate z
+        tcp_q = Eigen::Quaterniond(pose_fb_local(6),   // w
+                                   pose_fb_local(3),   // y
+                                   pose_fb_local(4),   // x
+                                   pose_fb_local(5)); // z
+      }
       
-      target_pose(0) += tx_scaled;  // X
-      target_pose(1) += ty_scaled;  // Y
-      target_pose(2) += tz_scaled;  // Z
+      // =====================================================================
+      // Phase 6a: Apply Translation (Frame-Dependent)
+      // =====================================================================
+      // SIMPLIFIED FOR DEBUGGING: test if rotation matrix is correct
+      
+      Eigen::Vector3d delta_local(tx_scaled, ty_scaled, tz_scaled);
+      
+      if (use_tcp_frame) {
+
+        //invert sign of deltaX and Z for intuitive control (stick forward → move forward in TCP frame)
+        delta_local[0] = -delta_local[0];
+        delta_local[1] = delta_local[1];
+        delta_local[2] = -delta_local[2];
+
+        // TCP Frame: apply rotation directly (no inverse)
+        Eigen::Vector3d delta_world = tcp_q.toRotationMatrix() * delta_local;
+        target_pose(0) += delta_world.x();
+        target_pose(1) += delta_world.y();
+        target_pose(2) += delta_world.z();
+      } else {
+        // WORLD Frame: apply translation directly
+        target_pose(0) += delta_local.x();
+        target_pose(1) += delta_local.y();
+        target_pose(2) += delta_local.z();
+      }
 
       // =====================================================================
-      // Phase 6b: Apply Rotation with Accumulation
+      // Phase 6b: Apply Rotation with Accumulation (WORLD Frame Only)
       // =====================================================================
-      // Key feature: Rotations accumulate on CURRENT target orientation
-      // This prevents spring-back when stick is released
+      // Simplified: keep rotation in WORLD frame for now (works well)
+      // TODO: TCP rotation can be added back after translation is fixed
       
       if (angle > ROTATION_THRESHOLD) {
         Eigen::Vector3d axis(rx_scaled, ry_scaled, rz_scaled);
         if (axis.norm() > 1e-12) {
           axis.normalize();
-          
-          // Create incremental rotation from stick input
           Eigen::Quaterniond rot_incr(Eigen::AngleAxisd(angle, axis));
-          
-          // Extract current target orientation as quaternion
-          Eigen::Quaterniond current_q(target_pose(6),    // w
-                                       target_pose(3),    // x
-                                       target_pose(4),    // y
-                                       target_pose(5));   // z
-          
-          // Accumulate rotation: new_orientation = current_orientation * delta_rotation
           Eigen::Quaterniond new_q = current_q * rot_incr;
           new_q.normalize();
           
@@ -2445,8 +2491,6 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
           target_pose(6) = new_q.w();
         }
       }
-      // NOTE: When stick returns to center (angle = 0), rotation stays accumulated.
-      // This is a key UX feature: maintains commanded orientation without need to hold stick.
     }
 
     // ==========================================================================
