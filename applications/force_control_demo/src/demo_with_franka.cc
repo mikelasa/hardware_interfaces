@@ -20,6 +20,11 @@
 #include <unistd.h>
 #include <franka/franka.h>
 #include <yaml-cpp/yaml.h>
+#include <atomic>
+#include <csignal>
+
+static std::atomic<bool> g_running{true};
+static void signal_handler(int) { g_running = false; }
 
 // ========== Helper Functions ==========
 
@@ -52,7 +57,8 @@ T deserialize_vector(const YAML::Node& node) {
 }
 
 int main() {
-    
+    std::signal(SIGINT, signal_handler);
+
     // ========== Configuration Setup ==========
     
     FRANKA::FRANKAConfig robot_config;
@@ -142,7 +148,7 @@ int main() {
         timer.set_loop_rate_hz(1000);                       // 1 kHz control loop frequency
         timer.tic();
 
-        while (true) {
+        while (g_running) {
             
             // ========== Timing Management ==========
             
@@ -207,5 +213,6 @@ int main() {
         std::cerr << e.what() << '\n';
     }
 
+    controller.flushLog();
     return 0;
 }

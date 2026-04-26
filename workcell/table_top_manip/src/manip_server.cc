@@ -5,7 +5,9 @@ ManipServer::ManipServer(const std::string& config_path) {
   initialize(config_path);
 }
 
-ManipServer::~ManipServer() {}
+ManipServer::~ManipServer() {
+  join_threads();
+}
 
 // =============================================================================
 // INITIALIZATION FUNCTION - MANIP SERVER SETUP
@@ -438,7 +440,7 @@ bool ManipServer::initialize(const std::string& config_path) {
   
   // Initialize Gamepad devices for teleoperation if enabled
   std::cout << "[ManipServer] Initializing teleoperation devices.\n";
-  if (_config.teleop_device == TeleopSelection::GAMEPAD) {
+  if (_config.teleop && _config.teleop_device == TeleopSelection::GAMEPAD) {
     for (int id : _id_list) {
       Gamepad::GamepadConfig gamepad_config;
       double translation_scale = 1e-3;   // default scale
@@ -797,35 +799,35 @@ void ManipServer::join_threads() {
   if (_config.run_rgb_thread) {
     std::cout << "[ManipServer]: Waiting for rgb threads to join." << std::endl;
     for (auto& rgb_thread : _rgb_threads) {
-      rgb_thread.join();
+      if (rgb_thread.joinable()) rgb_thread.join();
     }
   }
   if (_config.run_wrench_thread) {
     std::cout << "[ManipServer]: Waiting for wrench threads to join."
               << std::endl;
     for (auto& wrench_thread : _wrench_threads) {
-      wrench_thread.join();
+      if (wrench_thread.joinable()) wrench_thread.join();
     }
   }
   if (_config.run_robot_thread) {
     std::cout << "[ManipServer]: Waiting for robot threads to join."
               << std::endl;
     for (auto& robot_thread : _robot_threads) {
-      robot_thread.join();
+      if (robot_thread.joinable()) robot_thread.join();
     }
   }
   if (_config.run_eoat_thread) {
     std::cout << "[ManipServer]: Waiting for eoat threads to join."
               << std::endl;
     for (auto& eoat_thread : _eoat_threads) {
-      eoat_thread.join();
+      if (eoat_thread.joinable()) eoat_thread.join();
     }
   }
   if (_config.teleop) {
     std::cout << "[ManipServer]: Waiting for teleop threads to join."
               << std::endl;
     for (auto& teleop_thread : _teleop_threads) {
-      teleop_thread.join();
+      if (teleop_thread.joinable()) teleop_thread.join();
     }
     // Cleanup SpaceMouse devices
     for (auto& sm_ptr : spacemouse_ptrs) {
@@ -843,7 +845,7 @@ void ManipServer::join_threads() {
   if (_config.plot_rgb) {
     std::cout << "[ManipServer]: Waiting for plotting thread to join."
               << std::endl;
-    _rgb_plot_thread.join();
+    if (_rgb_plot_thread.joinable()) _rgb_plot_thread.join();
   }
 
   std::cout << "[ManipServer]: Threads have joined. Exiting." << std::endl;
