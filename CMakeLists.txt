@@ -48,6 +48,7 @@ add_subdirectory(hardware/wsg_gripper)
 add_subdirectory(hardware/franka)
 add_subdirectory(hardware/spacemouse)
 add_subdirectory(hardware/gamepad)
+add_subdirectory(hardware/gello)
 add_subdirectory(hardware/usbcam)
 
 # workcell to build
@@ -62,6 +63,7 @@ include_directories(${WORKCELL_INCLUDE_DIRS})
 add_subdirectory(applications/force_control_demo)
 add_subdirectory(applications/ft_calibration)
 add_subdirectory(applications/manipulation_data_collection)
+add_subdirectory(applications/gello_teleop)
 
 # install common
 install(DIRECTORY include/

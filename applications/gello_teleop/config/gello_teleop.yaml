@@ -1,0 +1,68 @@
+franka:
+  robot_ip: "172.17.6.164"
+  log_size: 50
+  tcp_mass: 0.4
+  fx_c_load: [0.0, 0.0, 0.03]
+  tcp_inertia: [0.1, 0.0, 0.0,
+                0.0, 0.1, 0.0,
+                0.0, 0.0, 0.1]
+  deviation: [10.0, 3.12, 6.283185307179586]
+  kDeltaT: 1e-3
+  CutoffFrequency: 100
+  realtime_config: "enforce" # ignore or enforce
+  controller_mode: "external_controller" # "joint_impedance" or "cartesian_impedance" or "external_controller"
+  motion_generator_mode: "joint_velocity" # "joint_position" or "joint_velocity" or "cartesian_position" or "cartesian_velocity"
+  setJointImpedance: [3000, 3000, 3000, 2500, 2500, 2000, 2000]
+  setCartesianImpedance: [1000, 1000, 1000, 200, 200, 200]
+  kMaxTranslationalVelocity: 0.25
+  kMaxTranslationalAcceleration: 1.0
+  kMaxTranslationalJerk: 500
+  kMaxRotationalVelocity: 0.25
+  kMaxRotationalAcceleration: 1.0
+  kMaxRotationalJerk: 500
+  robot_interface_config:
+    zone_safety_mode: "SAFETY_MODE_TRUNCATE"
+    incre_safety_mode: "SAFETY_MODE_STOP"
+    operation_mode: "OPERATION_MODE_CARTESIAN"
+    max_incre_m: 0.03
+    max_incre_rad: 0.2
+    max_incre_joint_rad: 0.0628
+    safe_zone: [-0.5, 0.7, -0.9, -0.2, 0.2, 0.8]
+
+impedance_controller0:
+  dt: 0.001
+  log_to_file: true
+  log_file_path: "/home/robotlab/data/controller_log/impedance_controller.log"
+  alert_overrun: false
+  compliance6d:
+    stiffness: [400, 400, 400, 40, 40, 40]
+    damping: [28, 28, 28, 9, 9, 9] # critical damping: D = 2*sqrt(K*m), m~0.5kg
+    nullspace_stiffness: [0, 0, 0, 0, 0, 0, 0]
+    nullspace_damping: [0, 0, 0, 0, 0, 0, 0]
+    stiction: [0, 0, 0, 0, 0, 0] #stationary friction model
+
+gello:
+  port: "/dev/ttyACM0"
+  baudrate: 1000000
+  joint_ids: [1, 2, 3, 4, 5, 6, 7]
+  # Calibrated offsets for Franka Panda (from gello_get_offset.py)
+  joint_offsets: [-3.1416, 3.1416, 3.1416, 4.7124, -3.1416, 4.7124, 4.7124]
+  joint_signs: [1, 1, 1, 1, 1, -1, 1]
+  gripper_id: 8
+  gripper_open_rad: 1.7604    # 100.87 deg in radians
+  gripper_close_rad: 1.0308   # 59.07 deg in radians
+  smoothing_alpha: 0.2   # exponential filter on raw encoder readings (1=off, lower=smoother)
+  read_rate_hz: 500
+
+teleop:
+  loop_rate_hz: 1000
+  alignment_threshold_rad: 0.15   # max per-joint error to allow start (rad, ~8.5 deg)
+  max_joint_speed_rad_s: 0.2      # max teleop speed per joint (rad/s); lower = slower/safer
+  max_joint_acc_rad_s2: 2.0       # max teleop acceleration per joint (rad/s^2); 0 disables
+  max_gello_data_age_s: 0.10      # hold pose if GELLO data is older than this (s)
+  home_duration_s: 5.0            # seconds to move robot from current pose to home
+  # Calibration reference pose — must match what was used in gello_get_offset.py
+  # Franka Panda: start-joints 0 0 0 -1.57 0 1.57 0
+  deadzone_threshold: 0.003       # deadzone in radians (0 disables)
+  home_joints: [0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, 0.0]
+  low_pass_alpha: 0.1    # reference pose filter in control loop (1=off, lower=smoother/more lag)
