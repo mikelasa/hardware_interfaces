@@ -28,7 +28,7 @@ const std::vector<ForceSensingMode>& all_force_sensing_modes() {
 const std::vector<CameraSelection>& all_camera_selections() {
   static const std::vector<CameraSelection> modes = {
       CameraSelection::NONE, CameraSelection::GOPRO,
-      CameraSelection::REALSENSE};
+      CameraSelection::REALSENSE, CameraSelection::USBCAM};
   return modes;
 }
 
@@ -48,7 +48,7 @@ const std::vector<ControllerSelection>& all_controller_selections() {
 const std::vector<TeleopSelection>& all_teleop_selections() {
   static const std::vector<TeleopSelection> modes = {
       TeleopSelection::NONE, TeleopSelection::SPACEMOUSE,
-      TeleopSelection::GAMEPAD};
+      TeleopSelection::GAMEPAD, TeleopSelection::GELLO};
   return modes;
 }
 
@@ -116,6 +116,8 @@ const char* to_string(const CameraSelection e) {
       return "GOPRO";
     case CameraSelection::REALSENSE:
       return "REALSENSE";
+    case CameraSelection::USBCAM:
+      return "USBCAM";
     default:
       return "INVALID_CAMERA_SELECTION";
   }
@@ -154,6 +156,8 @@ const char* to_string(const TeleopSelection e) {
       return "SPACEMOUSE";
     case TeleopSelection::GAMEPAD:
       return "GAMEPAD";
+    case TeleopSelection::GELLO:
+      return "GELLO";
     default:
       return "INVALID_TELEOP_SELECTION";
   }

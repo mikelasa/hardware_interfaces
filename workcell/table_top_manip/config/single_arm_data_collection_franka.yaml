@@ -7,7 +7,7 @@
 #    damping: low damping
 #    max_spring_force_magnitude: 15
 # always check the first few parameters:
-data_folder: "/home/robotlab/data/real/wipe_profile"  # folder to save data
+data_folder: "/home/robotlab/data/real/flip_up"  # folder to save data
 mock_hardware: false
 bimanual: false
 
@@ -17,21 +17,23 @@ run_rgb_thread: True
 run_eoat_thread: false
 teleop: false
 plot_rgb: false
+plot_wrench: false
 
 rgb_buffer_size: 11
 robot_buffer_size: 1200 #duplicado ya que los datos se leen el doble de rapido.
 wrench_buffer_size: 1200 # reducido porquu la velocidad es de 1Khz 
 eoat_buffer_size: 600
 robot_selection: "FRANKA"  # "UR_RTDE" or "FRANKA"
-camera_selection: "GOPRO"
+camera_selection: "USBCAM"
 force_sensing_mode: "JOINT_SENSORS"
 controller_selection: "IMPEDANCE_CONTROLLER"
-teleop_device: "GAMEPAD"  # "GAMEPAD" or "none"
+teleop_device: "GAMEPAD"  # "GAMEPAD", "GELLO" or "none"
 low_damping: [2.0, 2.0, 2.0, 0.1, 0.1, 0.1]
 output_rgb_hw: [224, 224]
 
 # inner joint sensor frequency (cant be changed for now because buffer synchronization)
 joint_sensor_frequency: 1000
+wrench_sensor_filter_alpha: 0.05  # Pre-filter on raw joint-sensor wrench (lower=smoother, higher=faster response)
 
 
 franka0:
@@ -96,6 +98,17 @@ spacemouse0:
   filter_alpha: 0.3
   update_rate_hz: 1000
 
+usbcam0:
+  device_name: "/dev/video0"
+  frame_width: 640
+  frame_height: 480
+  crop_rows: [-1, -1]
+  crop_cols: [-1, -1]
+  fps: 30
+  manual_exposure: true
+  exposure_absolute: 200  # 100 x 100us = 10ms = 1/100s (fits in 16.7ms frame, one 50Hz half-cycle)
+  cv_num_threads: 8
+
 gopro0:
   #device_name: "/dev/video0"
   device_name: "/dev/v4l/by-id/usb-Elgato_Cam_Link_4K_A29YB55031069F-video-index0"
@@ -109,13 +122,32 @@ gopro0:
 
 gamepad0:
   device_path: "/dev/input/js0"
-  deadzone_stick: 0.2
-  deadzone_trigger: 0.1
+  deadzone_stick: 0.12
+  deadzone_trigger: 0.08
   update_rate_hz: 1000
-  translation_scale: 5e-5
-  rotation_scale: 2.5e-4
-  rumble_force_min_n: 8        # Minimum force to start rumble (N)
-  rumble_force_max_n: 50       # Force at max vibration (N)
+  translation_scale: 2e-5
+  rotation_scale: 1.25e-4
+  input_filter_alpha: 0.15     # EMA smoothing on stick input (0=frozen, 1=raw, lower=smoother)
+  rumble_force_min_n: 10         # Minimum force to start rumble (N)
+  rumble_force_max_n: 20         # Force at max vibration (N)
   rumble_duration_ms: 200        # Duration per rumble pulse (ms)
-  rumble_refresh_ms: 150.0       # Min time between rumble refreshes (ms)  
-  rumble_filter_alpha: 0.05       # Low-pass filter (0.0-1.0, lower=smoother, ignores noise)
+  rumble_refresh_ms: 150.0       # Min time between rumble refreshes (ms)
+  rumble_filter_alpha: 0.00      # Second-stage LPF on force magnitude (lower=smoother)
+  rumble_bias_alpha: 0.005       # Baseline tracker speed (higher=adapts faster to free-space noise)
+
+gello0:
+  port: "/dev/ttyACM0"
+  baudrate: 1000000
+  joint_ids: [1, 2, 3, 4, 5, 6, 7]
+  joint_offsets: [-3.1416, 3.1416, 3.1416, 4.7124, -3.1416, 4.7124, 4.7124]
+  joint_signs: [1, 1, 1, 1, 1, -1, 1]
+  gripper_id: 8
+  gripper_open_rad: 1.7604
+  gripper_close_rad: 1.0308
+  smoothing_alpha: 0.2
+  read_rate_hz: 500
+
+gello_teleop:
+  low_pass_alpha: 0.1              # Position/orientation filter (lower=smoother, higher=faster)
+  alignment_threshold_rad: 0.2   # Max per-joint error to consider GELLO aligned (rad)
+  home_joints: [0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, 0.0]  # Reference pose for 2π correction

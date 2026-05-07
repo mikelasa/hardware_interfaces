@@ -32,6 +32,7 @@ target_link_libraries(ManipServer
   REALSENSE
   ATI_NETFT
   GoPro
+  usbcam
   ROBOTIQ_FT_HW
   RQSensorLinux
   UR_RTDE
@@ -41,6 +42,7 @@ target_link_libraries(ManipServer
   FRANKA
   SPACEMOUSE
   GAMEPAD
+  GELLO
   Franka::Franka
   ${RUT}
   ${FORCE_CONTROLLERS}

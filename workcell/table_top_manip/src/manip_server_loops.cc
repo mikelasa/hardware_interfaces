@@ -1,5 +1,6 @@
 #include "table_top_manip/manip_server.h"
 
+#include <iomanip>
 #include <RobotUtilities/interpolation_controller.h>
 #include <opencv2/core/eigen.hpp>
 
@@ -107,6 +108,14 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
   std::unique_ptr<franka::Model> model_ptr;
   if (!_config.mock_hardware) {
     model_ptr = std::make_unique<franka::Model>(franka_ptr->loadModel());
+    {
+      std::lock_guard<std::mutex> lock(_franka_model_mtxs[id]);
+      _franka_models[id] = std::shared_ptr<franka::Model>(model_ptr.get(), [](franka::Model*){});
+      franka::RobotState rs0 = franka_ptr->getRobotState();
+      _franka_F_T_EE[id] = rs0.F_T_EE;
+      _franka_EE_T_K[id] = rs0.EE_T_K;
+      _franka_model_ready[id] = true;
+    }
   }
 
   // ============================================================================
@@ -1092,8 +1101,11 @@ void ManipServer::joint_sensor_wrench_loop(const RUT::TimePoint& time0, int publ
   // Step 2: Initialize Wrench State Variables
   // ============================================================================
   
-  RUT::Vector6d wrench_fb;  // Joint torque vector (6D: Fx,Fy,Fz,Tx,Ty,Tz at tool)
+  RUT::Vector6d wrench_fb;           // Latest raw wrench from robot
+  RUT::Vector6d wrench_fb_filtered;  // EMA-filtered wrench published to _wrench_fb
   wrench_fb.setZero();
+  wrench_fb_filtered.setZero();
+  const double WRENCH_FILTER_ALPHA = _config.wrench_sensor_filter_alpha;
 
   // ============================================================================
   // Step 3: Wait for Source Buffer Population
@@ -1205,17 +1217,21 @@ void ManipServer::joint_sensor_wrench_loop(const RUT::TimePoint& time0, int publ
     //  - teleop_loop (which uses _wrench_fb for haptic feedback)
     //  - Other analysis threads
     
+    // Two-stage filter: pre-filter raw wrench here, teleop_loop applies a second stage
+    wrench_fb_filtered = WRENCH_FILTER_ALPHA * wrench_fb +
+                         (1.0 - WRENCH_FILTER_ALPHA) * wrench_fb_filtered;
+
     {
-      // Store in timestamped circular buffer for data analysis
+      // Store raw wrench in timestamped circular buffer for data logging
       std::lock_guard<std::mutex> lock(_wrench_buffer_mtxs[id]);
       _wrench_buffers[id].put(wrench_fb);
       _wrench_timestamp_ms_buffers[id].put(time_now_ms);
     }
-    
+
     {
-      // Store in direct feedback variable (fast query without locking)
+      // Publish filtered wrench for haptic feedback and eoat force control
       std::lock_guard<std::mutex> lock(_wrench_fb_mtxs[id]);
-      _wrench_fb[id] = wrench_fb;
+      _wrench_fb[id] = wrench_fb_filtered;
     }
 
     // ==========================================================================
@@ -1538,42 +1554,24 @@ void ManipServer::rgb_loop(const RUT::TimePoint& time0, int id) {
   
   while (true) {
     double time_now_ms = 0;
-    
-    // ==========================================================================
-    // Phase 1: Capture Frame from Camera
-    // ==========================================================================
-    // Blocking call naturally throttles to camera frame rate
-    
+
     {
       std::lock_guard<std::mutex> lock(_color_mat_mtxs[id]);
-      
+
       if (!_config.mock_hardware) {
         // Real camera: blocking capture from hardware
         _color_mats[id] = camera_ptrs[id]->next_rgb_frame_blocking();
-        
       } else {
         // Mock camera: generate zero frame and simulate 60Hz timing
         _color_mats[id] = cv::Mat::zeros(1080, 1080, CV_8UC3);
         usleep(20 * 1000);  // 20ms → ~50Hz
       }
-      
+
       time_now_ms = timer.toc_ms();
-      
-      // ==========================================================================
-      // Phase 2: Resize Frame to Output Dimensions
-      // ==========================================================================
-      // Configured output resolution may differ from camera native resolution
-      // Use linear interpolation for smooth downsampling
-      
+
       cv::resize(_color_mats[id], resized_color_mat,
                  cv::Size(_config.output_rgb_hw[1], _config.output_rgb_hw[0]),
                  cv::INTER_LINEAR);
-      
-      // ==========================================================================
-      // Phase 3: Split BGR Channels
-      // ==========================================================================
-      // OpenCV uses BGR format; we want RGB, so reverse order during stacking
-      
       cv::split(resized_color_mat, bgr);  // Split into B, G, R arrays
     }
 
@@ -1620,7 +1618,6 @@ void ManipServer::rgb_loop(const RUT::TimePoint& time0, int id) {
       }
       _states_rgb_seq_id[id]++;
       saved_count++;
-      
     } else {
       _states_rgb_thread_saving[id] = false;
     }
@@ -1641,7 +1638,7 @@ void ManipServer::rgb_loop(const RUT::TimePoint& time0, int id) {
     // Phase 8: Maintain 60Hz Loop Rate
     // ==========================================================================
     // Sleep until next frame time (blocking camera naturally throttles)
-    
+
     loop_timer.sleep_till_next();
     
   }  // End of capture loop
@@ -1673,13 +1670,20 @@ void ManipServer::rgb_loop(const RUT::TimePoint& time0, int id) {
 void ManipServer::rgb_plot_loop() {
   std::string header = "[ManipServer][plot thread]: ";
   std::cout << header << "starting thread." << std::endl;
+
+  // RGB window
   cv::namedWindow("RGB", cv::WINDOW_NORMAL);
   cv::resizeWindow("RGB", 1200, 1000);
   std::vector<cv::Mat> color_mat_copy;
   cv::Mat canvas;
-
   for (int id : _id_list) {
     color_mat_copy.push_back(cv::Mat());
+  }
+
+  // Force display (runs in same thread — no OpenCV multi-thread issues)
+  if (_config.plot_wrench) {
+    cv::namedWindow("Force [N]", cv::WINDOW_NORMAL);
+    cv::resizeWindow("Force [N]", 300, 120);
   }
 
   {
@@ -1690,28 +1694,50 @@ void ManipServer::rgb_plot_loop() {
   std::cout << header << "Loop started." << std::endl;
 
   while (true) {
+    // ---- RGB ----
     for (int id : _id_list) {
       std::lock_guard<std::mutex> lock(_color_mat_mtxs[id]);
       color_mat_copy[id] = _color_mats[id].clone();
     }
-
     cv::vconcat(color_mat_copy, canvas);
-
     cv::imshow("RGB", canvas);
 
+    // ---- Force display ----
+    if (_config.plot_wrench && !_id_list.empty()) {
+      RUT::VectorXd wrench;
+      {
+        std::lock_guard<std::mutex> lock(_wrench_fb_mtxs[_id_list[0]]);
+        wrench = _wrench_fb[_id_list[0]];
+      }
+
+      float fn = 0.0f;
+      if (wrench.size() >= 3) {
+        float fx = static_cast<float>(wrench(0));
+        float fy = static_cast<float>(wrench(1));
+        float fz = static_cast<float>(wrench(2));
+        fn = std::sqrt(fx*fx + fy*fy + fz*fz);
+      }
+
+      cv::Mat fdisp(120, 300, CV_8UC3, cv::Scalar(20, 20, 20));
+      cv::putText(fdisp, "|F| [N]", {10, 35},
+                  cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(160, 160, 160), 1);
+      char buf[32];
+      snprintf(buf, sizeof(buf), "%.2f", fn);
+      cv::putText(fdisp, buf, {10, 100},
+                  cv::FONT_HERSHEY_SIMPLEX, 2.5, cv::Scalar(60, 220, 60), 3);
+      cv::imshow("Force [N]", fdisp);
+    }
+
+    // ---- Exit check ----
     {
       std::lock_guard<std::mutex> lock(_ctrl_mtx);
       if (!_ctrl_flag_running) {
-        std::cout << header
-                  << "[rgb plot thread] _ctrl_flag_running is false. Shuting "
-                     "down this thread"
-                  << std::endl;
+        std::cout << header << "Shutting down plot thread." << std::endl;
         break;
       }
     }
 
-    if (cv::waitKey(30) >= 0)
-      break;
+    if (cv::waitKey(30) >= 0) break;  // ~30 Hz, any key closes
   }
   std::cout << "[plot thread] Joined." << std::endl;
 }
@@ -2173,6 +2199,10 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   RUT::Vector7d target_pose = current_pose;  // Accumulates teleop commands
   GamepadData gp_data;                       // Current gamepad state
 
+  // EMA-filtered velocity commands (smoothed stick output)
+  double tx_f = 0, ty_f = 0, tz_f = 0;
+  double ry_f = 0, rz_f = 0;
+
   // Reference frame toggle (WORLD ↔ TCP)
   bool use_tcp_frame = false;
   bool a_prev = false;
@@ -2193,19 +2223,21 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   // ============================================================================
   // Allow per-robot customization of control sensitivity
   
-  double TRANSLATION_SCALE = 1.0;  // m/s per stick unit
-  double ROTATION_SCALE = 1.0;     // rad/s per stick unit
-  
-  if (_teleop_translation_scales.size() > id) {
+  double TRANSLATION_SCALE = 1.0;
+  double ROTATION_SCALE = 1.0;
+  double INPUT_FILTER_ALPHA = 0.15;
+
+  if (_teleop_translation_scales.size() > id)
     TRANSLATION_SCALE = _teleop_translation_scales[id];
-  }
-  if (_teleop_rotation_scales.size() > id) {
+  if (_teleop_rotation_scales.size() > id)
     ROTATION_SCALE = _teleop_rotation_scales[id];
-  }
-  
+  if (_teleop_input_filter_alphas.size() > id)
+    INPUT_FILTER_ALPHA = _teleop_input_filter_alphas[id];
+
   std::cout << header << "Teleoperation scaling:" << std::endl;
-  std::cout << header << "  Translation scale: " << TRANSLATION_SCALE << " m/s" << std::endl;
-  std::cout << header << "  Rotation scale:    " << ROTATION_SCALE << " rad/s" << std::endl;
+  std::cout << header << "  Translation scale:  " << TRANSLATION_SCALE << std::endl;
+  std::cout << header << "  Rotation scale:     " << ROTATION_SCALE << std::endl;
+  std::cout << header << "  Input filter alpha: " << INPUT_FILTER_ALPHA << std::endl;
 
   // ============================================================================
   // Step 7: Initialize Haptic Feedback Parameters
@@ -2218,7 +2250,7 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   const double   RUMBLE_REFRESH_MS        = gamepad_ptrs[id]->get_rumble_refresh_ms();
   const double   RUMBLE_FILTER_ALPHA      = gamepad_ptrs[id]->get_rumble_filter_alpha();
   const double   RUMBLE_HYSTERESIS_N      = 1.0;   // Deadband (N) around threshold
-  const double   RUMBLE_BIAS_ALPHA        = 0.002; // Slow baseline tracker (gravity/friction)
+  const double   RUMBLE_BIAS_ALPHA        = gamepad_ptrs[id]->get_rumble_bias_alpha();
   const uint16_t RUMBLE_WEAK              = 0;     // Weak rumble motor strength
   
   double last_rumble_ms = -1e9;          // Timestamp of last haptic feedback
@@ -2300,19 +2332,23 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
       // Left stick → X/Y translation (with scaling)
       // Triggers → Z translation (up with LT, down with RB)
       
-      tx_scaled = gp_data.left_stick_y * TRANSLATION_SCALE;
-      ty_scaled = -gp_data.left_stick_x * TRANSLATION_SCALE;  // Negate X for intuitive mapping
-      tz_scaled = (gp_data.left_trigger - gp_data.right_trigger) * TRANSLATION_SCALE;
-      
-      // =====================================================================
-      // Phase 2c: Process Rotation Input
-      // =====================================================================
-      // Right stick → Yaw/roll rotation (with scaling)
-      // Note: rx_scaled commented out (pitch disabled to prevent gimbal issues)
-      
-      ry_scaled = -gp_data.right_stick_y * ROTATION_SCALE;  // Negate Y for intuitive mapping
-      rz_scaled = gp_data.right_stick_x * ROTATION_SCALE;
+      // Quadratic curve: preserves sign, squares magnitude for finer near-center control
+      auto curve = [](double v) { return std::copysign(v * v, v); };
+
+      tx_scaled = curve(gp_data.left_stick_y)  * TRANSLATION_SCALE;
+      ty_scaled = -curve(gp_data.left_stick_x) * TRANSLATION_SCALE;
+      tz_scaled = curve(gp_data.left_trigger - gp_data.right_trigger) * TRANSLATION_SCALE;
+
+      ry_scaled = -curve(gp_data.right_stick_y) * ROTATION_SCALE;
+      rz_scaled =  curve(gp_data.right_stick_x) * ROTATION_SCALE;
     }
+
+    // Apply EMA filter to smooth out stick noise and sudden step inputs
+    tx_f = INPUT_FILTER_ALPHA * tx_scaled + (1.0 - INPUT_FILTER_ALPHA) * tx_f;
+    ty_f = INPUT_FILTER_ALPHA * ty_scaled + (1.0 - INPUT_FILTER_ALPHA) * ty_f;
+    tz_f = INPUT_FILTER_ALPHA * tz_scaled + (1.0 - INPUT_FILTER_ALPHA) * tz_f;
+    ry_f = INPUT_FILTER_ALPHA * ry_scaled + (1.0 - INPUT_FILTER_ALPHA) * ry_f;
+    rz_f = INPUT_FILTER_ALPHA * rz_scaled + (1.0 - INPUT_FILTER_ALPHA) * rz_f;
 
     // ==========================================================================
     // Phase 3: Read Force Sensor and Apply Haptic Filtering
@@ -2412,24 +2448,17 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     // ==========================================================================
     // Only update pose if movement commands exceed noise threshold
     
-    double tx_norm = std::abs(tx_scaled);
-    double ty_norm = std::abs(ty_scaled);
-    double tz_norm = std::abs(tz_scaled);
-    double angle = std::sqrt(rx_scaled * rx_scaled + ry_scaled * ry_scaled + rz_scaled * rz_scaled);
-    
-    const double MOTION_THRESHOLD = 1e-9;  // Minimum significant movement
-    const double ROTATION_THRESHOLD = 1e-6;  // Minimum significant rotation
+    double angle = std::sqrt(ry_f * ry_f + rz_f * rz_f);
 
-    if (tx_norm > MOTION_THRESHOLD || ty_norm > MOTION_THRESHOLD || 
-        tz_norm > MOTION_THRESHOLD || angle > ROTATION_THRESHOLD) {
-      
-      // Extract current target orientation as quaternion (used in both frames)
-      Eigen::Quaterniond current_q(target_pose(6),    // w
-                                   target_pose(3),    // x
-                                   target_pose(4),    // y
-                                   target_pose(5));   // z
+    const double MOTION_THRESHOLD = 1e-9;
+    const double ROTATION_THRESHOLD = 1e-6;
 
-      // Use feedback orientation for TCP mapping to match the real tool pose
+    if (std::abs(tx_f) > MOTION_THRESHOLD || std::abs(ty_f) > MOTION_THRESHOLD ||
+        std::abs(tz_f) > MOTION_THRESHOLD || angle > ROTATION_THRESHOLD) {
+
+      Eigen::Quaterniond current_q(target_pose(6), target_pose(3),
+                                   target_pose(4), target_pose(5));
+
       Eigen::Quaterniond tcp_q = current_q;
       if (use_tcp_frame) {
         RUT::Vector7d pose_fb_local;
@@ -2437,54 +2466,31 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
           std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
           pose_fb_local = _poses_fb[id];
         }
-        // Swap x-y and negate z
-        tcp_q = Eigen::Quaterniond(pose_fb_local(6),   // w
-                                   pose_fb_local(3),   // y
-                                   pose_fb_local(4),   // x
-                                   pose_fb_local(5)); // z
+        tcp_q = Eigen::Quaterniond(pose_fb_local(6), pose_fb_local(3),
+                                   pose_fb_local(4), pose_fb_local(5));
       }
-      
-      // =====================================================================
-      // Phase 6a: Apply Translation (Frame-Dependent)
-      // =====================================================================
-      // SIMPLIFIED FOR DEBUGGING: test if rotation matrix is correct
-      
-      Eigen::Vector3d delta_local(tx_scaled, ty_scaled, tz_scaled);
-      
+
+      Eigen::Vector3d delta_local(tx_f, ty_f, tz_f);
+
       if (use_tcp_frame) {
-
-        //invert sign of deltaX and Z for intuitive control (stick forward → move forward in TCP frame)
         delta_local[0] = -delta_local[0];
-        delta_local[1] = delta_local[1];
         delta_local[2] = -delta_local[2];
-
-        // TCP Frame: apply rotation directly (no inverse)
         Eigen::Vector3d delta_world = tcp_q.toRotationMatrix() * delta_local;
         target_pose(0) += delta_world.x();
         target_pose(1) += delta_world.y();
         target_pose(2) += delta_world.z();
       } else {
-        // WORLD Frame: apply translation directly
         target_pose(0) += delta_local.x();
         target_pose(1) += delta_local.y();
         target_pose(2) += delta_local.z();
       }
 
-      // =====================================================================
-      // Phase 6b: Apply Rotation with Accumulation (WORLD Frame Only)
-      // =====================================================================
-      // Simplified: keep rotation in WORLD frame for now (works well)
-      // TODO: TCP rotation can be added back after translation is fixed
-      
       if (angle > ROTATION_THRESHOLD) {
-        Eigen::Vector3d axis(rx_scaled, ry_scaled, rz_scaled);
+        Eigen::Vector3d axis(0, ry_f, rz_f);
         if (axis.norm() > 1e-12) {
           axis.normalize();
           Eigen::Quaterniond rot_incr(Eigen::AngleAxisd(angle, axis));
-          Eigen::Quaterniond new_q = current_q * rot_incr;
-          new_q.normalize();
-          
-          // Store accumulated orientation back to pose
+          Eigen::Quaterniond new_q = (current_q * rot_incr).normalized();
           target_pose(3) = new_q.x();
           target_pose(4) = new_q.y();
           target_pose(5) = new_q.z();
@@ -2498,7 +2504,7 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     // ==========================================================================
     // Send target pose to motion planner for execution
     
-    set_target_pose(target_pose, 1, id);  // dt = 1 (100ms)
+    set_target_pose(target_pose, 10, id);  // 10ms lookahead for smooth interpolation
 
     // ==========================================================================
     // Phase 8: Maintain 1kHz Loop Rate
@@ -2534,3 +2540,97 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   std::cout << header << "Thread terminated." << std::endl;
 }
 
+// 4×4 column-major transform → [x, y, z, qw, qx, qy, qz]
+static RUT::Vector7d gello_T16_to_pose(const std::array<double, 16>& T) {
+  Eigen::Matrix4d M;
+  for (int c = 0; c < 4; ++c)
+    for (int r = 0; r < 4; ++r)
+      M(r, c) = T[c * 4 + r];
+  Eigen::Affine3d tf(M);
+  Eigen::Vector3d p = tf.translation();
+  Eigen::Quaterniond q(tf.rotation());
+  RUT::Vector7d pose;
+  pose << p.x(), p.y(), p.z(), q.w(), q.x(), q.y(), q.z();
+  return pose;
+}
+
+void ManipServer::gello_teleop_loop(const RUT::TimePoint& time0, int id) {
+  std::string header = "[ManipServer][GELLO thread] " + std::to_string(id) + ": ";
+  std::cout << header << "Starting thread.\n";
+
+  RUT::Timer timer;
+  timer.tic(time0);
+
+  if (!gello_ptrs[id]) {
+    std::cerr << header << "GELLO pointer is null. Exiting." << std::endl;
+    return;
+  }
+
+  // Wait for robot pose and the Franka model (both set by robot_impedance_loop)
+  RUT::Vector7d target_pose;
+  std::shared_ptr<franka::Model> model_ptr;
+  for (int retry = 0; retry < 400; ++retry) {
+    bool pose_ok = false, model_ok = false;
+    {
+      std::lock_guard<std::mutex> lp(_poses_fb_mtxs[id]);
+      if (_poses_fb[id].size() == 7) { target_pose = _poses_fb[id]; pose_ok = true; }
+    }
+    {
+      std::lock_guard<std::mutex> lm(_franka_model_mtxs[id]);
+      if (_franka_model_ready[id]) { model_ptr = _franka_models[id]; model_ok = true; }
+    }
+    if (pose_ok && model_ok) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    if (retry == 399) {
+      std::cerr << header << "Timeout waiting for robot init. Exiting." << std::endl;
+      return;
+    }
+  }
+
+  const std::array<double, 16>& F_T_EE = _franka_F_T_EE[id];
+  const std::array<double, 16>& EE_T_K = _franka_EE_T_K[id];
+  const double LP_ALPHA = _gello_lp_alphas[id];
+
+  std::cout << header << "Ready. LP_ALPHA=" << LP_ALPHA << "\n";
+
+  RUT::Vector7d pose_ref_filtered = target_pose;
+
+  RUT::Timer loop_timer;
+  loop_timer.set_loop_rate_hz(1000);
+  loop_timer.start_timed_loop();
+
+  while (true) {
+    {
+      std::lock_guard<std::mutex> lock(_ctrl_mtx);
+      if (!_ctrl_flag_running) break;
+    }
+
+    GelloData gd;
+    gello_ptrs[id]->get_data(gd);
+
+    if ((int)gd.joint_positions.size() >= 7) {
+      std::array<double, 7> q_arr{};
+      for (int i = 0; i < 7; ++i) q_arr[i] = gd.joint_positions[i];
+      auto T = model_ptr->pose(franka::Frame::kEndEffector, q_arr, F_T_EE, EE_T_K);
+      RUT::Vector7d pose_ref = gello_T16_to_pose(T);
+
+      // LP filter: lerp position, slerp orientation
+      Eigen::Quaterniond q_new(pose_ref[3], pose_ref[4], pose_ref[5], pose_ref[6]);
+      Eigen::Quaterniond q_filt(pose_ref_filtered[3], pose_ref_filtered[4],
+                                pose_ref_filtered[5], pose_ref_filtered[6]);
+      if (q_filt.dot(q_new) < 0.0) q_new.coeffs() = -q_new.coeffs();
+      pose_ref_filtered.head<3>() =
+          (1.0 - LP_ALPHA) * pose_ref_filtered.head<3>() + LP_ALPHA * pose_ref.head<3>();
+      Eigen::Quaterniond q_out = q_filt.slerp(LP_ALPHA, q_new);
+      pose_ref_filtered[3] = q_out.w();
+      pose_ref_filtered[4] = q_out.x();
+      pose_ref_filtered[5] = q_out.y();
+      pose_ref_filtered[6] = q_out.z();
+    }
+
+    set_target_pose(pose_ref_filtered, 10, id);
+    loop_timer.sleep_till_next();
+  }
+
+  std::cout << header << "Thread terminated." << std::endl;
+}

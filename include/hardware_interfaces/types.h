@@ -33,13 +33,13 @@ enum class ForceSensingMode {
   JOINT_SENSORS
 };
 
-enum class CameraSelection { NONE, GOPRO, REALSENSE };
+enum class CameraSelection { NONE, GOPRO, REALSENSE, USBCAM };
 
 enum class RobotSelection {UR_RTDE, FRANKA };
 
 enum class ControllerSelection {IMPEDANCE_CONTROLLER, ADMITTANCE_CONTROLLER };
 
-enum class TeleopSelection { NONE, SPACEMOUSE, GAMEPAD };
+enum class TeleopSelection { NONE, SPACEMOUSE, GAMEPAD, GELLO };
 
 enum class RandomType {
   NONE,

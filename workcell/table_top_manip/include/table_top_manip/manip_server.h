@@ -27,6 +27,7 @@
 #include <ati_netft/ati_netft.h>
 #include <coinft/coin_ft.h>
 #include <gopro/gopro.h>
+#include <usbcam/usbcam.h>
 #include <realsense/realsense.h>
 #include <robotiq_ft_modbus/robotiq_ft_modbus.h>
 #include <ur_rtde/ur_rtde.h>
@@ -34,6 +35,7 @@
 #include <wsg_gripper/wsg_gripper.h>
 #include <spacemouse/spacemouse.h>
 #include <gamepad/gamepad.h>
+#include <gello/gello.h>
 
 #include <RobotUtilities/data_buffer.h>
 
@@ -54,6 +56,7 @@ struct ManipServerConfig {
   bool run_wrench_thread{false};
   bool run_rgb_thread{false};
   bool plot_rgb{false};
+  bool plot_wrench{false};
   bool teleop{false};
   int rgb_buffer_size{5};
   int robot_buffer_size{100};
@@ -62,6 +65,7 @@ struct ManipServerConfig {
   bool mock_hardware{false};
   bool bimanual{false};
   int joint_sensor_frequency{1000};
+  double wrench_sensor_filter_alpha{0.1};  // EMA pre-filter on raw wrench before haptic use
   RobotSelection robot_selection{RobotSelection::FRANKA};
   CameraSelection camera_selection{CameraSelection::NONE};
   ForceSensingMode force_sensing_mode{ForceSensingMode::NONE};
@@ -78,6 +82,7 @@ struct ManipServerConfig {
       run_wrench_thread = node["run_wrench_thread"].as<bool>();
       run_rgb_thread = node["run_rgb_thread"].as<bool>();
       plot_rgb = node["plot_rgb"].as<bool>();
+      if (node["plot_wrench"]) plot_wrench = node["plot_wrench"].as<bool>();
       if (node["teleop"]) teleop = node["teleop"].as<bool>();
       rgb_buffer_size = node["rgb_buffer_size"].as<int>();
       robot_buffer_size = node["robot_buffer_size"].as<int>();
@@ -86,6 +91,8 @@ struct ManipServerConfig {
       mock_hardware = node["mock_hardware"].as<bool>();
       bimanual = node["bimanual"].as<bool>();
       joint_sensor_frequency = node["joint_sensor_frequency"].as<int>();
+      if (node["wrench_sensor_filter_alpha"])
+        wrench_sensor_filter_alpha = node["wrench_sensor_filter_alpha"].as<double>();
       robot_selection = string_to_enum<RobotSelection>(
           node["robot_selection"].as<std::string>());
       camera_selection = string_to_enum<CameraSelection>(
@@ -259,9 +266,20 @@ class ManipServer {
   std::vector<std::shared_ptr<JSInterfaces>> eoat_ptrs;
   std::vector<std::shared_ptr<SpaceMouse>> spacemouse_ptrs;
   std::vector<std::shared_ptr<Gamepad>> gamepad_ptrs;
+  std::vector<std::shared_ptr<GelloInterface>> gello_ptrs;
   // Teleoperation scaling per robot id (from YAML spacemouse{id})
   std::vector<double> _teleop_translation_scales;
   std::vector<double> _teleop_rotation_scales;
+  std::vector<double> _teleop_input_filter_alphas;
+  std::vector<double> _gello_lp_alphas;
+  std::vector<double> _gello_align_thresholds;
+  std::vector<std::vector<double>> _gello_home_joints;
+  // Franka model + kinematics shared between robot_impedance_loop and gello_teleop_loop
+  std::vector<std::shared_ptr<franka::Model>> _franka_models;
+  std::deque<std::mutex> _franka_model_mtxs;
+  std::vector<bool> _franka_model_ready;
+  std::vector<std::array<double, 16>> _franka_F_T_EE;
+  std::vector<std::array<double, 16>> _franka_EE_T_K;
 
   // controllers
   std::vector<AdmittanceController> _admittance_controllers;
@@ -328,6 +346,7 @@ class ManipServer {
   void robot_logging_loop(const RUT::TimePoint& time0, int robot_id);
   void eoat_loop(const RUT::TimePoint& time0, int robot_id);
   void teleop_loop(const RUT::TimePoint& time0, int robot_id);
+  void gello_teleop_loop(const RUT::TimePoint& time0, int robot_id);
   void rgb_loop(const RUT::TimePoint& time0, int camera_id);
   void ext_sensor_wrench_loop(const RUT::TimePoint& time0, int publish_rate,
                    int sensor_id);

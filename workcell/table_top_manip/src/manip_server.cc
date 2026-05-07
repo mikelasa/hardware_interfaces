@@ -212,6 +212,22 @@ bool ManipServer::initialize(const std::string& config_path) {
                     << ". Exiting." << std::endl;
           return false;
         }
+      } else if (_config.camera_selection == CameraSelection::USBCAM) {
+        Usbcam::UsbcamConfig usbcam_config;
+        try {
+          usbcam_config.deserialize(config["usbcam" + std::to_string(id)]);
+        } catch (const std::exception& e) {
+          std::cerr << "Failed to load the Usbcam config file: " << e.what()
+                    << std::endl;
+          return false;
+        }
+        camera_ptrs.emplace_back(new Usbcam);
+        Usbcam* usbcam_ptr = static_cast<Usbcam*>(camera_ptrs[id].get());
+        if (!usbcam_ptr->init(time0, usbcam_config)) {
+          std::cerr << "Failed to initialize Usbcam for id " << id
+                    << ". Exiting." << std::endl;
+          return false;
+        }
       } else {
         std::cerr << "Invalid camera selection. Exiting." << std::endl;
         return false;
@@ -445,7 +461,8 @@ bool ManipServer::initialize(const std::string& config_path) {
       Gamepad::GamepadConfig gamepad_config;
       double translation_scale = 1e-3;   // default scale
       double rotation_scale = 1e-3;      // default scale
-      
+      double input_filter_alpha = 0.15;  // default EMA smoothing
+
       // Parse gamepad-specific config
       auto gamepad_node = config["gamepad" + std::to_string(id)];
       if (gamepad_node) {
@@ -467,8 +484,11 @@ bool ManipServer::initialize(const std::string& config_path) {
         if (gamepad_node["rotation_scale"]) {
           rotation_scale = gamepad_node["rotation_scale"].as<double>();
         }
+        if (gamepad_node["input_filter_alpha"]) {
+          input_filter_alpha = gamepad_node["input_filter_alpha"].as<double>();
+        }
       }
-      
+
       gamepad_ptrs.emplace_back(new Gamepad);
       Gamepad* gamepad_ptr = static_cast<Gamepad*>(gamepad_ptrs[id].get());
       if (!gamepad_ptr->init(gamepad_config)) {
@@ -478,9 +498,44 @@ bool ManipServer::initialize(const std::string& config_path) {
       }
       _teleop_translation_scales.push_back(translation_scale);
       _teleop_rotation_scales.push_back(rotation_scale);
+      _teleop_input_filter_alphas.push_back(input_filter_alpha);
     }
   }
-      
+
+  // Initialize GELLO devices for teleoperation if enabled
+  if (_config.teleop && _config.teleop_device == TeleopSelection::GELLO) {
+    for (int id : _id_list) {
+      GelloInterface::GelloConfig gello_config;
+      double lp_alpha = 0.1;
+      double align_threshold = 0.15;
+      std::vector<double> home_joints = {0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, 0.0};
+
+      auto gello_node = config["gello" + std::to_string(id)];
+      if (gello_node) {
+        gello_config.deserialize(gello_node);
+      }
+      auto teleop_node = config["gello_teleop"];
+      if (teleop_node) {
+        if (teleop_node["low_pass_alpha"])
+          lp_alpha = teleop_node["low_pass_alpha"].as<double>();
+        if (teleop_node["alignment_threshold_rad"])
+          align_threshold = teleop_node["alignment_threshold_rad"].as<double>();
+        if (teleop_node["home_joints"])
+          home_joints = teleop_node["home_joints"].as<std::vector<double>>();
+      }
+
+      auto gello_ptr = std::make_shared<GelloInterface>();
+      if (!gello_ptr->init(gello_config)) {
+        std::cerr << "[ManipServer] Failed to initialize GELLO on "
+                  << gello_config.port << ". Exiting." << std::endl;
+        return false;
+      }
+      gello_ptrs.push_back(gello_ptr);
+      _gello_lp_alphas.push_back(lp_alpha);
+      _gello_align_thresholds.push_back(align_threshold);
+      _gello_home_joints.push_back(home_joints);
+    }
+  }
 
   // ============================================================================
   // Step 7: Create Data Buffers for Sensor Streams
@@ -622,6 +677,11 @@ bool ManipServer::initialize(const std::string& config_path) {
     _states_rgb_seq_id.push_back(0);
     _states_wrench_seq_id.push_back(0);
     _states_logging_thread_ready.push_back(false);
+    _franka_models.push_back(nullptr);
+    _franka_model_mtxs.emplace_back();
+    _franka_model_ready.push_back(false);
+    _franka_F_T_EE.push_back({});
+    _franka_EE_T_K.push_back({});
   }
 
   // ============================================================================
@@ -733,14 +793,17 @@ bool ManipServer::initialize(const std::string& config_path) {
       _eoat_threads.emplace_back(&ManipServer::eoat_loop, this, std::ref(time0),
                                  id);
     }
-    if (_config.teleop && gamepad_ptrs.size() > id && gamepad_ptrs[id]) {
+    if (_config.teleop && gamepad_ptrs.size() > (size_t)id && gamepad_ptrs[id]) {
       _teleop_threads.emplace_back(&ManipServer::teleop_loop, this, std::ref(time0),
                                    id);
     }
+    if (_config.teleop && gello_ptrs.size() > (size_t)id && gello_ptrs[id]) {
+      _teleop_threads.emplace_back(&ManipServer::gello_teleop_loop, this, std::ref(time0),
+                                   id);
+    }
   }
-  if (_config.plot_rgb) {
-    // pause 1s, then start the rgb plot thread
-    // Delay ensures camera thread has populated initial frames before visualization starts
+  if (_config.plot_rgb || _config.plot_wrench) {
+    // pause 1s, then start the combined plot thread
     std::this_thread::sleep_for(std::chrono::seconds(1));
     _rgb_plot_thread = std::thread(&ManipServer::rgb_plot_loop, this);
   }
@@ -769,7 +832,7 @@ bool ManipServer::initialize(const std::string& config_path) {
           all_ready = false;
         }
       }
-      if (_config.plot_rgb) {
+      if (_config.plot_rgb || _config.plot_wrench) {
         all_ready = all_ready && _state_plot_thread_ready;
       }
     }
@@ -839,6 +902,12 @@ void ManipServer::join_threads() {
     for (auto& gp_ptr : gamepad_ptrs) {
       if (gp_ptr) {
         gp_ptr->cleanup();
+      }
+    }
+    // Cleanup GELLO devices
+    for (auto& g_ptr : gello_ptrs) {
+      if (g_ptr) {
+        g_ptr->cleanup();
       }
     }
   }
