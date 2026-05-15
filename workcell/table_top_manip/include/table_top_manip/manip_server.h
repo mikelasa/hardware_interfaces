@@ -55,6 +55,7 @@ struct ManipServerConfig {
   bool run_eoat_thread{false};
   bool run_wrench_thread{false};
   bool run_rgb_thread{false};
+  int num_cameras{1};
   bool plot_rgb{false};
   bool plot_wrench{false};
   bool teleop{false};
@@ -67,7 +68,7 @@ struct ManipServerConfig {
   int joint_sensor_frequency{1000};
   double wrench_sensor_filter_alpha{0.1};  // EMA pre-filter on raw wrench before haptic use
   RobotSelection robot_selection{RobotSelection::FRANKA};
-  CameraSelection camera_selection{CameraSelection::NONE};
+  std::vector<CameraSelection> camera_selection{};  // one entry per camera id
   ForceSensingMode force_sensing_mode{ForceSensingMode::NONE};
   ControllerSelection controller_selection{ControllerSelection::IMPEDANCE_CONTROLLER};
   TeleopSelection teleop_device{TeleopSelection::GAMEPAD};
@@ -81,6 +82,7 @@ struct ManipServerConfig {
       run_eoat_thread = node["run_eoat_thread"].as<bool>();
       run_wrench_thread = node["run_wrench_thread"].as<bool>();
       run_rgb_thread = node["run_rgb_thread"].as<bool>();
+      if (node["num_cameras"]) num_cameras = node["num_cameras"].as<int>();
       plot_rgb = node["plot_rgb"].as<bool>();
       if (node["plot_wrench"]) plot_wrench = node["plot_wrench"].as<bool>();
       if (node["teleop"]) teleop = node["teleop"].as<bool>();
@@ -95,8 +97,14 @@ struct ManipServerConfig {
         wrench_sensor_filter_alpha = node["wrench_sensor_filter_alpha"].as<double>();
       robot_selection = string_to_enum<RobotSelection>(
           node["robot_selection"].as<std::string>());
-      camera_selection = string_to_enum<CameraSelection>(
-          node["camera_selection"].as<std::string>());
+      if (node["camera_selection"].IsSequence()) {
+        for (const auto& item : node["camera_selection"])
+          camera_selection.push_back(
+              string_to_enum<CameraSelection>(item.as<std::string>()));
+      } else {
+        camera_selection.push_back(string_to_enum<CameraSelection>(
+            node["camera_selection"].as<std::string>()));
+      }
       force_sensing_mode = string_to_enum<ForceSensingMode>(
           node["force_sensing_mode"].as<std::string>());
       controller_selection = string_to_enum<ControllerSelection>(
@@ -209,7 +217,8 @@ class ManipServer {
   std::vector<RUT::Matrix6d> _dampings_low{};
 
   // list of id
-  std::vector<int> _id_list;
+  std::vector<int> _id_list;         // one entry per robot arm
+  std::vector<int> _camera_id_list;  // one entry per camera (independent of robots)
 
   // data buffers
   std::vector<RUT::DataBuffer<Eigen::MatrixXd>> _camera_rgb_buffers;

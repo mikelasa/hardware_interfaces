@@ -7,9 +7,10 @@
 #    damping: low damping
 #    max_spring_force_magnitude: 15
 # always check the first few parameters:
-data_folder: "/home/robotlab/data/real/flip_up"  # folder to save data
+data_folder: "/home/robotlab/data/real/flip_up_V3"  # folder to save data
 mock_hardware: false
 bimanual: false
+num_cameras: 1
 
 run_robot_thread: True
 run_wrench_thread: True
@@ -24,7 +25,7 @@ robot_buffer_size: 1200 #duplicado ya que los datos se leen el doble de rapido.
 wrench_buffer_size: 1200 # reducido porquu la velocidad es de 1Khz 
 eoat_buffer_size: 600
 robot_selection: "FRANKA"  # "UR_RTDE" or "FRANKA"
-camera_selection: "USBCAM"
+camera_selection: ["GOPRO", "REALSENSE"]
 force_sensing_mode: "JOINT_SENSORS"
 controller_selection: "IMPEDANCE_CONTROLLER"
 teleop_device: "GAMEPAD"  # "GAMEPAD", "GELLO" or "none"
@@ -39,7 +40,7 @@ wrench_sensor_filter_alpha: 0.05  # Pre-filter on raw joint-sensor wrench (lower
 franka0:
   robot_ip: "172.17.6.164"
   log_size: 50
-  tcp_mass: 0.4
+  tcp_mass: 0.3
   fx_c_load: [0.0, 0.0, 0.03]
   tcp_inertia: [0.1, 0.0, 0.0,
                 0.0, 0.1, 0.0,
@@ -82,7 +83,7 @@ impedance_controller0:
   alert_overrun: false
   compliance6d:
     stiffness: [1500, 1500, 1500, 100, 100, 100] # 
-    damping: [20, 20, 20, 10, 10 ,10] # applying critical damping: D = 2*sqrt(K*m)
+    damping: [77.5, 77.5, 77.5, 10, 10 ,10] # applying critical damping: D = 2*sqrt(K*m)
     nullspace_stiffness: [0, 0, 0, 0, 0, 0, 0]
     nullspace_damping: [0, 0, 0, 0, 0, 0, 0]
     stiction: [0, 0, 0, 0, 0, 0] #stationary friction model
@@ -99,7 +100,7 @@ spacemouse0:
   update_rate_hz: 1000
 
 usbcam0:
-  device_name: "/dev/video0"
+  device_name: "/dev/video7"
   frame_width: 640
   frame_height: 480
   crop_rows: [-1, -1]
@@ -108,6 +109,14 @@ usbcam0:
   manual_exposure: true
   exposure_absolute: 200  # 100 x 100us = 10ms = 1/100s (fits in 16.7ms frame, one 50Hz half-cycle)
   cv_num_threads: 8
+
+realsense1:
+  width: 848
+  height: 480
+  framerate: 30
+  enable_color: true
+  enable_depth: false
+  align_depth_to_color: false
 
 gopro0:
   #device_name: "/dev/video0"
@@ -125,8 +134,8 @@ gamepad0:
   deadzone_stick: 0.12
   deadzone_trigger: 0.08
   update_rate_hz: 1000
-  translation_scale: 2e-5
-  rotation_scale: 1.25e-4
+  translation_scale: 1e-4
+  rotation_scale: 2.5e-4
   input_filter_alpha: 0.15     # EMA smoothing on stick input (0=frozen, 1=raw, lower=smoother)
   rumble_force_min_n: 10         # Minimum force to start rumble (N)
   rumble_force_max_n: 20         # Force at max vibration (N)

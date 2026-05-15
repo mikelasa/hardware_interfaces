@@ -1676,7 +1676,8 @@ void ManipServer::rgb_plot_loop() {
   cv::resizeWindow("RGB", 1200, 1000);
   std::vector<cv::Mat> color_mat_copy;
   cv::Mat canvas;
-  for (int id : _id_list) {
+  for (int id : _camera_id_list) {
+    (void)id;
     color_mat_copy.push_back(cv::Mat());
   }
 
@@ -1695,9 +1696,10 @@ void ManipServer::rgb_plot_loop() {
 
   while (true) {
     // ---- RGB ----
-    for (int id : _id_list) {
+    for (int id : _camera_id_list) {
       std::lock_guard<std::mutex> lock(_color_mat_mtxs[id]);
-      color_mat_copy[id] = _color_mats[id].clone();
+      cv::resize(_color_mats[id], color_mat_copy[id],
+                 cv::Size(_config.output_rgb_hw[1], _config.output_rgb_hw[0]));
     }
     cv::vconcat(color_mat_copy, canvas);
     cv::imshow("RGB", canvas);
@@ -2277,6 +2279,7 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     base_pose = _poses_fb[id];
   }
 
+
   std::cout << header << "Teleoperation READY" << std::endl;
   std::cout << header << "Control mapping:" << std::endl;
   std::cout << header << "  Left stick (X/Y) → Translation (X/Y)" << std::endl;
@@ -2302,7 +2305,7 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     }
 
     double tx_scaled = 0, ty_scaled = 0, tz_scaled = 0;
-    double rx_scaled = 0, ry_scaled = 0, rz_scaled = 0;
+    double ry_scaled = 0, rz_scaled = 0;
 
     // ==========================================================================
     // Phase 2: Read Gamepad Input

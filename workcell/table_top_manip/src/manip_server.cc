@@ -80,7 +80,10 @@ bool ManipServer::initialize(const std::string& config_path) {
     _id_list = {0};
   }
 
+  for (int i = 0; i < _config.num_cameras; ++i) _camera_id_list.push_back(i);
+
   std::cout << "_id_list: " << _id_list.size() << std::endl;
+  std::cout << "_camera_id_list: " << _camera_id_list.size() << std::endl;
 
   // Storage for force sensor publish rates (determined during hardware init)
   std::vector<int> wrench_publish_rate;
@@ -172,68 +175,6 @@ bool ManipServer::initialize(const std::string& config_path) {
       }
 
       // ------------------------------------------------------------------------
-      // 4c. Camera Initialization
-      // ------------------------------------------------------------------------
-      // Supports GoPro (USB) or RealSense (depth + RGB) cameras
-      
-      // first confirm which camera is being used
-      if (_config.camera_selection == CameraSelection::GOPRO) {
-        GoPro::GoProConfig gopro_config;
-        try {
-          gopro_config.deserialize(config["gopro" + std::to_string(id)]);
-        } catch (const std::exception& e) {
-          std::cerr << "Failed to load the GoPro config file: " << e.what()
-                    << std::endl;
-          return false;
-        }
-        camera_ptrs.emplace_back(new GoPro);
-        GoPro* gopro_ptr = static_cast<GoPro*>(camera_ptrs[id].get());
-        if (!gopro_ptr->init(time0, gopro_config)) {
-          std::cerr << "Failed to initialize GoPro for id " << id
-                    << ". Exiting." << std::endl;
-          return false;
-        }
-      // REALSENSE CAMERA
-      } else if (_config.camera_selection == CameraSelection::REALSENSE) {
-        Realsense::RealsenseConfig realsense_config;
-        try {
-          realsense_config.deserialize(
-              config["realsense" + std::to_string(id)]);
-        } catch (const std::exception& e) {
-          std::cerr << "Failed to load the Realsense config file: " << e.what()
-                    << std::endl;
-          return false;
-        }
-        camera_ptrs.emplace_back(new Realsense);
-        Realsense* realsense_ptr =
-            static_cast<Realsense*>(camera_ptrs[id].get());
-        if (!realsense_ptr->init(time0, realsense_config)) {
-          std::cerr << "Failed to initialize realsense for id " << id
-                    << ". Exiting." << std::endl;
-          return false;
-        }
-      } else if (_config.camera_selection == CameraSelection::USBCAM) {
-        Usbcam::UsbcamConfig usbcam_config;
-        try {
-          usbcam_config.deserialize(config["usbcam" + std::to_string(id)]);
-        } catch (const std::exception& e) {
-          std::cerr << "Failed to load the Usbcam config file: " << e.what()
-                    << std::endl;
-          return false;
-        }
-        camera_ptrs.emplace_back(new Usbcam);
-        Usbcam* usbcam_ptr = static_cast<Usbcam*>(camera_ptrs[id].get());
-        if (!usbcam_ptr->init(time0, usbcam_config)) {
-          std::cerr << "Failed to initialize Usbcam for id " << id
-                    << ". Exiting." << std::endl;
-          return false;
-        }
-      } else {
-        std::cerr << "Invalid camera selection. Exiting." << std::endl;
-        return false;
-      }
-
-      // ------------------------------------------------------------------------
       // 4d. Force/Torque Sensor Initialization
       // ------------------------------------------------------------------------
       // Multiple sensor options supported:
@@ -313,10 +254,74 @@ bool ManipServer::initialize(const std::string& config_path) {
     // Step 4 (Alternative): Mock Hardware Mode
     // ============================================================================
     // For testing without physical hardware, use high dummy publish rate
-    
+
     // mock hardware, if true then the publish rate of wrench is just 7kHz
     for (int id : _id_list) {
       wrench_publish_rate.push_back(7000);
+    }
+  }
+
+  // ============================================================================
+  // Step 4e: Camera Initialization (independent of robot count)
+  // ============================================================================
+  // Cameras are indexed by _camera_id_list, which is independent of _id_list.
+  // YAML keys: gopro0/gopro1, usbcam0/usbcam1, realsense0/realsense1, etc.
+
+  if (!_config.mock_hardware && _config.run_rgb_thread) {
+    for (int id : _camera_id_list) {
+      CameraSelection cam_type = _config.camera_selection[id];
+      if (cam_type == CameraSelection::GOPRO) {
+        GoPro::GoProConfig gopro_config;
+        try {
+          gopro_config.deserialize(config["gopro" + std::to_string(id)]);
+        } catch (const std::exception& e) {
+          std::cerr << "Failed to load GoPro config for camera " << id
+                    << ": " << e.what() << std::endl;
+          return false;
+        }
+        camera_ptrs.emplace_back(new GoPro);
+        GoPro* gopro_ptr = static_cast<GoPro*>(camera_ptrs[id].get());
+        if (!gopro_ptr->init(time0, gopro_config)) {
+          std::cerr << "Failed to initialize GoPro for camera " << id
+                    << ". Exiting." << std::endl;
+          return false;
+        }
+      } else if (cam_type == CameraSelection::REALSENSE) {
+        Realsense::RealsenseConfig realsense_config;
+        try {
+          realsense_config.deserialize(config["realsense" + std::to_string(id)]);
+        } catch (const std::exception& e) {
+          std::cerr << "Failed to load Realsense config for camera " << id
+                    << ": " << e.what() << std::endl;
+          return false;
+        }
+        camera_ptrs.emplace_back(new Realsense);
+        Realsense* realsense_ptr = static_cast<Realsense*>(camera_ptrs[id].get());
+        if (!realsense_ptr->init(time0, realsense_config)) {
+          std::cerr << "Failed to initialize Realsense for camera " << id
+                    << ". Exiting." << std::endl;
+          return false;
+        }
+      } else if (cam_type == CameraSelection::USBCAM) {
+        Usbcam::UsbcamConfig usbcam_config;
+        try {
+          usbcam_config.deserialize(config["usbcam" + std::to_string(id)]);
+        } catch (const std::exception& e) {
+          std::cerr << "Failed to load Usbcam config for camera " << id
+                    << ": " << e.what() << std::endl;
+          return false;
+        }
+        camera_ptrs.emplace_back(new Usbcam);
+        Usbcam* usbcam_ptr = static_cast<Usbcam*>(camera_ptrs[id].get());
+        if (!usbcam_ptr->init(time0, usbcam_config)) {
+          std::cerr << "Failed to initialize Usbcam for camera " << id
+                    << ". Exiting." << std::endl;
+          return false;
+        }
+      } else {
+        std::cerr << "Invalid camera selection for camera " << id << ". Exiting." << std::endl;
+        return false;
+      }
     }
   }
 
@@ -558,13 +563,27 @@ bool ManipServer::initialize(const std::string& config_path) {
   // each variable is saved using DataBuffer, which is a thread-safe circular buffer
   // the buffers are initialized with the appropriate sizes and names
   std::cout << "[ManipServer] Creating data buffers.\n";
+
+  // Camera buffers — indexed by _camera_id_list (independent of robot count)
+  for (int id : _camera_id_list) {
+    _camera_rgb_buffers.push_back(RUT::DataBuffer<Eigen::MatrixXd>());
+    _camera_rgb_timestamp_ms_buffers.push_back(RUT::DataBuffer<double>());
+
+    _camera_rgb_buffers[id].initialize(
+        _config.rgb_buffer_size, 3 * _config.output_rgb_hw[0],
+        _config.output_rgb_hw[1], "camera_rgb" + std::to_string(id));
+    _camera_rgb_timestamp_ms_buffers[id].initialize(
+        _config.rgb_buffer_size, 1, 1,
+        "camera_rgb" + std::to_string(id) + "_timestamp_ms");
+  }
+
+  // Robot/sensor buffers — indexed by _id_list
   int num_ft_sensors = 1;
   for (int id : _id_list) {
     if (_config.force_sensing_mode != ForceSensingMode::JOINT_SENSORS) {
       num_ft_sensors = force_sensor_ptrs[id]->getNumSensors();
     }
-    
-    _camera_rgb_buffers.push_back(RUT::DataBuffer<Eigen::MatrixXd>());
+
     _pose_buffers.push_back(RUT::DataBuffer<Eigen::VectorXd>());
     _vel_buffers.push_back(RUT::DataBuffer<Eigen::VectorXd>());
     _eoat_buffers.push_back(RUT::DataBuffer<Eigen::VectorXd>());
@@ -574,7 +593,6 @@ bool ManipServer::initialize(const std::string& config_path) {
     _eoat_waypoints_buffers.push_back(RUT::DataBuffer<Eigen::VectorXd>());
     _stiffness_buffers.push_back(RUT::DataBuffer<Eigen::MatrixXd>());
 
-    _camera_rgb_timestamp_ms_buffers.push_back(RUT::DataBuffer<double>());
     _pose_timestamp_ms_buffers.push_back(RUT::DataBuffer<double>());
     _vel_timestamp_ms_buffers.push_back(RUT::DataBuffer<double>());
     _eoat_timestamp_ms_buffers.push_back(RUT::DataBuffer<double>());
@@ -584,38 +602,29 @@ bool ManipServer::initialize(const std::string& config_path) {
     _eoat_waypoints_timestamp_ms_buffers.push_back(RUT::DataBuffer<double>());
     _stiffness_timestamp_ms_buffers.push_back(RUT::DataBuffer<double>());
 
-    _camera_rgb_buffers[id].initialize(
-        _config.rgb_buffer_size, 3 * _config.output_rgb_hw[0],
-        _config.output_rgb_hw[1], "camera_rgb" + std::to_string(id));
-
-    _pose_buffers[id].initialize(_config.robot_buffer_size, 7,
-                                 1,  //xyz qwqxqyqz
+    _pose_buffers[id].initialize(_config.robot_buffer_size, 7, 1,
                                  "pose" + std::to_string(id));
-    _vel_buffers[id].initialize(_config.robot_buffer_size, 6, 1,  // xyz rxryrz
+    _vel_buffers[id].initialize(_config.robot_buffer_size, 6, 1,
                                 "vel" + std::to_string(id));
-    _eoat_buffers[id].initialize(_config.eoat_buffer_size, 2, 1,  // pos, force
+    _eoat_buffers[id].initialize(_config.eoat_buffer_size, 2, 1,
                                  "eoat" + std::to_string(id));
     _wrench_buffers[id].initialize(_config.wrench_buffer_size,
-                                   6 * num_ft_sensors, 1,  // FxFyFz TxTyTz per sensor
+                                   6 * num_ft_sensors, 1,
                                    "wrench" + std::to_string(id));
     _robot_wrench_buffers[id].initialize(_config.robot_buffer_size, 6, 1,
                                          "robot_wrench" + std::to_string(id));
-
-    _waypoints_buffers[id].initialize(-1, 7, 1,  // -1 = unbounded size
+    _waypoints_buffers[id].initialize(-1, 7, 1,
                                       "waypoints" + std::to_string(id));
     _eoat_waypoints_buffers[id].initialize(
         -1, 2, 1, "eoat_waypoints" + std::to_string(id));
     _stiffness_buffers[id].initialize(-1, 6, 6,
                                       "stiffness" + std::to_string(id));
 
-    _camera_rgb_timestamp_ms_buffers[id].initialize(
-        _config.rgb_buffer_size, 1, 1,
-        "camera_rgb" + std::to_string(id) + "_timestamp_ms");
     _pose_timestamp_ms_buffers[id].initialize(
         _config.robot_buffer_size, 1, 1,
         "pose" + std::to_string(id) + "_timestamp_ms");
     _vel_timestamp_ms_buffers[id].initialize(
-        _config.robot_buffer_size, 1, 1,  // pose/vel buffers have the same size
+        _config.robot_buffer_size, 1, 1,
         "vel" + std::to_string(id) + "_timestamp_ms");
     _eoat_timestamp_ms_buffers[id].initialize(
         _config.eoat_buffer_size, 1, 1,
@@ -641,8 +650,12 @@ bool ManipServer::initialize(const std::string& config_path) {
   // read/write simultaneously (e.g., control thread writes, logging thread reads)
   
   // initialize the buffer mutexes
-  for (int id : _id_list) {
+  for (int id : _camera_id_list) {
+    (void)id;
     _camera_rgb_buffer_mtxs.emplace_back();
+  }
+  for (int id : _id_list) {
+    (void)id;
     _pose_buffer_mtxs.emplace_back();
     _vel_buffer_mtxs.emplace_back();
     _eoat_buffer_mtxs.emplace_back();
@@ -662,19 +675,22 @@ bool ManipServer::initialize(const std::string& config_path) {
   //   - _seq_id: Sequence number for data frame ordering
   
   // initialize thread status variables
-  // indicates the state of each thread
+  for (int id : _camera_id_list) {
+    (void)id;
+    _states_rgb_thread_ready.push_back(false);
+    _states_rgb_thread_saving.push_back(false);
+    _states_rgb_seq_id.push_back(0);
+  }
   for (int id : _id_list) {
+    (void)id;
     _states_robot_thread_ready.push_back(false);
     _states_eoat_thread_ready.push_back(false);
-    _states_rgb_thread_ready.push_back(false);
     _states_wrench_thread_ready.push_back(false);
     _states_robot_thread_saving.push_back(false);
     _states_eoat_thread_saving.push_back(false);
-    _states_rgb_thread_saving.push_back(false);
     _states_wrench_thread_saving.push_back(false);
     _states_robot_seq_id.push_back(0);
     _states_eoat_seq_id.push_back(0);
-    _states_rgb_seq_id.push_back(0);
     _states_wrench_seq_id.push_back(0);
     _states_logging_thread_ready.push_back(false);
     _franka_models.push_back(nullptr);
@@ -713,20 +729,24 @@ bool ManipServer::initialize(const std::string& config_path) {
   //   - Timestamp vectors for data synchronization
   
   // initialize additional shared variables
-  for (int id : _id_list) {
+  for (int id : _camera_id_list) {
+    (void)id;
     _ctrl_rgb_folders.push_back("");
+    _color_mats.push_back(cv::Mat());
+    _color_mat_mtxs.emplace_back();
+    _camera_rgb_timestamps_ms.push_back(Eigen::VectorXd());
+  }
+  for (int id : _id_list) {
+    (void)id;
     _ctrl_robot_data_streams.push_back(std::ofstream());
     _ctrl_eoat_data_streams.push_back(std::ofstream());
     _ctrl_wrench_data_streams.push_back(std::ofstream());
     _ctrl_torque_data_streams.push_back(std::ofstream());
     _ctrl_joint_data_streams.push_back(std::ofstream());
-    _color_mats.push_back(cv::Mat());
-    _color_mat_mtxs.emplace_back();
     _poses_fb.push_back(Eigen::VectorXd());
     _poses_fb_mtxs.emplace_back();
     _wrench_fb.push_back(Eigen::VectorXd());
     _wrench_fb_mtxs.emplace_back();
-    _camera_rgb_timestamps_ms.push_back(Eigen::VectorXd());
     _pose_timestamps_ms.push_back(Eigen::VectorXd());
     _vel_timestamps_ms.push_back(Eigen::VectorXd());
     _eoat_timestamps_ms.push_back(Eigen::VectorXd());
@@ -761,11 +781,14 @@ bool ManipServer::initialize(const std::string& config_path) {
 
   _ctrl_flag_running = true;
   std::cout << "[ManipServer] Starting the threads.\n";
-  for (int id : _id_list) {
-    if (_config.run_rgb_thread) {
-      _rgb_threads.emplace_back(&ManipServer::rgb_loop, this, std::ref(time0),
-                                id);
+
+  if (_config.run_rgb_thread) {
+    for (int id : _camera_id_list) {
+      _rgb_threads.emplace_back(&ManipServer::rgb_loop, this, std::ref(time0), id);
     }
+  }
+
+  for (int id : _id_list) {
     if (_config.run_robot_thread) {
       if (_config.controller_selection == ControllerSelection::ADMITTANCE_CONTROLLER) {
         _robot_threads.emplace_back(&ManipServer::robot_admittance_loop, this,
@@ -820,21 +843,20 @@ bool ManipServer::initialize(const std::string& config_path) {
   while (true) {
     bool all_ready = true;
     {
-          std::lock_guard<std::mutex> lock(_ctrl_mtx);
-          for (int id : _id_list) {
-        if (_config.run_robot_thread && !_states_robot_thread_ready[id]) {
+      std::lock_guard<std::mutex> lock(_ctrl_mtx);
+      for (int id : _id_list) {
+        if (_config.run_robot_thread && !_states_robot_thread_ready[id])
           all_ready = false;
-        }
-        if (_config.run_wrench_thread && !_states_wrench_thread_ready[id]) {
+        if (_config.run_wrench_thread && !_states_wrench_thread_ready[id])
           all_ready = false;
-        }
-        if (_config.run_rgb_thread && !_states_rgb_thread_ready[id]) {
-          all_ready = false;
+      }
+      if (_config.run_rgb_thread) {
+        for (int id : _camera_id_list) {
+          if (!_states_rgb_thread_ready[id]) all_ready = false;
         }
       }
-      if (_config.plot_rgb || _config.plot_wrench) {
+      if (_config.plot_rgb || _config.plot_wrench)
         all_ready = all_ready && _state_plot_thread_ready;
-      }
     }
     if (all_ready) {
       break;
@@ -921,16 +943,18 @@ void ManipServer::join_threads() {
 }
 
 bool ManipServer::is_ready() {
-  for (int id : _id_list) {
-    if (_config.run_rgb_thread) {
+  if (_config.run_rgb_thread) {
+    for (int id : _camera_id_list) {
       std::lock_guard<std::mutex> lock(_camera_rgb_buffer_mtxs[id]);
       if (!_camera_rgb_buffers[id].is_full()) {
-        std::cout << id << ": Camera RGB buffer not full: size: "
+        std::cout << "camera " << id << ": RGB buffer not full: size: "
                   << _camera_rgb_buffers[id].size() << std::endl;
         return false;
       }
     }
+  }
 
+  for (int id : _id_list) {
     if (_config.run_robot_thread) {
       std::lock_guard<std::mutex> lock(_pose_buffer_mtxs[id]);
       if (!_pose_buffers[id].is_full()) {
@@ -1470,7 +1494,7 @@ void ManipServer::start_saving_data_for_a_new_episode() {
   std::vector<std::string> wrench_json_file_names;
   std::vector<std::string> torque_json_file_names;
   std::vector<std::string> joint_json_file_names;
-  create_folder_for_new_episode(_config.data_folder, _id_list,
+  create_folder_for_new_episode(_config.data_folder, _camera_id_list, _id_list,
                                 _ctrl_rgb_folders, robot_json_file_names,
                                 wrench_json_file_names, torque_json_file_names,
                                 joint_json_file_names);
@@ -1499,9 +1523,11 @@ void ManipServer::stop_saving_data() {
 
 bool ManipServer::is_saving_data() {
   bool is_saving = false;
+  for (int id : _camera_id_list) {
+    is_saving = is_saving || _states_rgb_thread_saving[id];
+  }
   for (int id : _id_list) {
     is_saving = is_saving || _states_robot_thread_saving[id] ||
-                _states_rgb_thread_saving[id] ||
                 _states_wrench_thread_saving[id];
   }
   return is_saving;

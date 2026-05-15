@@ -16,7 +16,9 @@ inline std::string makeFixedLength(const int i, const int length) {
 }
 
 inline void create_folder_for_new_episode(
-    const std::string& data_folder, std::vector<int> id_list,
+    const std::string& data_folder,
+    std::vector<int> camera_id_list,
+    std::vector<int> robot_id_list,
     std::vector<std::string>& rgb_folders,
     std::vector<std::string>& robot_json_files,
     std::vector<std::string>& wrench_json_files,
@@ -35,14 +37,21 @@ inline void create_folder_for_new_episode(
               << " already exists. Exiting." << std::endl;
     exit(1);
   }
+
   rgb_folders.clear();
+  for (int id : camera_id_list) {
+    std::string rgb_folder = episode_folder + "/rgb_" + std::to_string(id);
+    fs::create_directory(rgb_folder);
+    rgb_folders.push_back(rgb_folder);
+    std::cout << "[create_folder_for_new_episode] Created rgb folder: "
+              << rgb_folder << std::endl;
+  }
+
   robot_json_files.clear();
   wrench_json_files.clear();
   torque_json_files.clear();
   joint_json_files.clear();
-  for (int id : id_list) {
-    std::string rgb_folder = episode_folder + "/rgb_" + std::to_string(id);
-    fs::create_directory(rgb_folder);
+  for (int id : robot_id_list) {
     std::string robot_json_file =
         episode_folder + "/robot_data_" + std::to_string(id) + ".json";
     std::string wrench_json_file =
@@ -51,13 +60,10 @@ inline void create_folder_for_new_episode(
         episode_folder + "/torque_data_" + std::to_string(id) + ".json";
     std::string joint_json_file =
         episode_folder + "/joint_data_" + std::to_string(id) + ".json";
-    rgb_folders.push_back(rgb_folder);
     robot_json_files.push_back(robot_json_file);
     wrench_json_files.push_back(wrench_json_file);
     torque_json_files.push_back(torque_json_file);
     joint_json_files.push_back(joint_json_file);
-    std::cout << "[create_folder_for_new_episode] Created rgb folder: "
-              << rgb_folder << std::endl;
     std::cout << "[create_folder_for_new_episode] generated robot file: "
               << robot_json_file << std::endl;
     std::cout << "[create_folder_for_new_episode] generated wrench file: "
