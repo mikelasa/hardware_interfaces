@@ -49,6 +49,12 @@ PYBIND11_MODULE(manip_server_pybind, m)
         .def("schedule_waypoints", &ManipServer::schedule_waypoints,
                 py::arg(), py::arg(), py::arg("robot_id") = 0)
         .def("schedule_stiffness", &ManipServer::schedule_stiffness,
-                py::arg(), py::arg(), py::arg("robot_id") = 0);
+                py::arg(), py::arg(), py::arg("robot_id") = 0)
+        .def("schedule_eoat_waypoints", &ManipServer::schedule_eoat_waypoints,
+                py::arg(), py::arg(), py::arg("robot_id") = 0)
+        .def("get_eoat", &ManipServer::get_eoat,
+                py::arg(), py::arg("robot_id") = 0)
+        .def("get_eoat_timestamps_ms", &ManipServer::get_eoat_timestamps_ms,
+                py::arg("id") = 0);
 }
 // clang-format on

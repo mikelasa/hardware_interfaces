@@ -915,7 +915,7 @@ void ManipServer::eoat_loop(const RUT::TimePoint& time0, int id) {
 
   bool ctrl_flag_saving = false;  // local copy
 
-  RUT::TaskSpaceInterpolationController intp_controller;
+  RUT::JointSpaceInterpolationController intp_controller;
   intp_controller.initialize(eoat_cmd, timer.toc_ms());
   std::cout << header
             << "intp_controller initialized with pos_fb: " << pos_fb.transpose()
@@ -986,9 +986,13 @@ void ManipServer::eoat_loop(const RUT::TimePoint& time0, int id) {
       std::lock_guard<std::mutex> lock(_wrench_fb_mtxs[id]);
       // TODO: currently, assuming the grasping force is captured by Z axis of the first wrench sensor.
       // Need to find a better way to specify it.
-      force_fb = _wrench_fb[id][2];
+      if (_wrench_fb[id].size() > 2) {
+        force_fb = _wrench_fb[id][2];
+      }
     }
-    eoat_cmd[1] -= force_fb;
+    if (_config.eoat_selection != EoatSelection::FRANKA_GRIPPER) {
+      eoat_cmd[1] -= force_fb;
+    }
     if ((!_config.mock_hardware) && (!eoat_ptrs[id]->setJointsPosForce(
                                         eoat_cmd.head(1), eoat_cmd.tail(1)))) {
       std::cout << header << "setJointsPosForce failed. Ending thread."
@@ -2209,6 +2213,10 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   bool use_tcp_frame = false;
   bool a_prev = false;
 
+  // Gripper open/close button state (rising-edge detection)
+  bool rb_prev = false;
+  bool lb_prev = false;
+
   // ============================================================================
   // Step 5: Initialize Loop Timing
   // ============================================================================
@@ -2328,9 +2336,39 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
                   << (use_tcp_frame ? "TCP" : "WORLD") << std::endl;
       }
       a_prev = a_now;
-      
+
       // =====================================================================
-      // Phase 2b: Process Translation Input
+      // Phase 2b: Gripper Open/Close on LB/RB Rising Edge
+      // =====================================================================
+      // RB (right bumper / R1) → close gripper using close preset
+      // LB (left bumper  / L1) → open  gripper using open  preset
+
+      if (_config.run_eoat_thread) {
+        const bool rb_now = gp_data.button_rb;
+        if (rb_now && !rb_prev) {
+          Eigen::MatrixXd wp(2, 1);
+          Eigen::VectorXd tp(1);
+          wp(0, 0) = _config.gripper_close_preset.width;
+          wp(1, 0) = _config.gripper_close_preset.force;
+          tp(0) = timer.toc_ms() + _config.gripper_close_preset.duration_ms;
+          schedule_eoat_waypoints(wp, tp, id);
+        }
+        rb_prev = rb_now;
+
+        const bool lb_now = gp_data.button_lb;
+        if (lb_now && !lb_prev) {
+          Eigen::MatrixXd wp(2, 1);
+          Eigen::VectorXd tp(1);
+          wp(0, 0) = _config.gripper_open_preset.width;
+          wp(1, 0) = _config.gripper_open_preset.force;
+          tp(0) = timer.toc_ms() + _config.gripper_open_preset.duration_ms;
+          schedule_eoat_waypoints(wp, tp, id);
+        }
+        lb_prev = lb_now;
+      }
+
+      // =====================================================================
+      // Phase 2d: Process Translation Input
       // =====================================================================
       // Left stick → X/Y translation (with scaling)
       // Triggers → Z translation (up with LT, down with RB)

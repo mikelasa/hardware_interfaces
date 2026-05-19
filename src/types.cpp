@@ -38,6 +38,12 @@ const std::vector<RobotSelection>& all_robot_selections() {
   return modes;
 }
 
+const std::vector<EoatSelection>& all_eoat_selections() {
+  static const std::vector<EoatSelection> modes = {
+      EoatSelection::NONE, EoatSelection::WSG, EoatSelection::FRANKA_GRIPPER};
+  return modes;
+}
+
 const std::vector<ControllerSelection>& all_controller_selections() {
   static const std::vector<ControllerSelection> modes = {
       ControllerSelection::IMPEDANCE_CONTROLLER,
@@ -132,6 +138,20 @@ const char* to_string(const RobotSelection e) {
       return "FRANKA";
     default:
       return "INVALID_ROBOT_SELECTION";
+  }
+}
+
+template <>
+const char* to_string(const EoatSelection e) {
+  switch (e) {
+    case EoatSelection::NONE:
+      return "NONE";
+    case EoatSelection::WSG:
+      return "WSG";
+    case EoatSelection::FRANKA_GRIPPER:
+      return "FRANKA_GRIPPER";
+    default:
+      return "INVALID_EOAT_SELECTION";
   }
 }
 
@@ -232,6 +252,16 @@ RobotSelection string_to_enum(const std::string& string) {
   }
 
   return RobotSelection::FRANKA;
+}
+
+template <>
+EoatSelection string_to_enum(const std::string& string) {
+  for (const auto& e : all_eoat_selections()) {
+    if (string == to_string(e)) {
+      return e;
+    }
+  }
+  return EoatSelection::NONE;
 }
 
 template <>

@@ -155,22 +155,41 @@ bool ManipServer::initialize(const std::string& config_path) {
       // WSG gripper with position and force control capabilities
       
       if (_config.run_eoat_thread) {
-        // only initialize if the thread is running
-        WSGGripper::WSGGripperConfig eoat_config;
-        try {
-          eoat_config.deserialize(config["wsg_gripper" + std::to_string(id)]);
-        } catch (const std::exception& e) {
-          std::cerr << "Failed to load the eoat config file: " << e.what()
-                    << std::endl;
-          return false;
-        }
-        eoat_ptrs.emplace_back(new WSGGripper);
-        WSGGripper* wsggripper_ptr =
-            static_cast<WSGGripper*>(eoat_ptrs[id].get());
-        if (!wsggripper_ptr->init(time0, eoat_config)) {
-          std::cerr << "Failed to initialize WSGGripper for id " << id
-                    << ". Exiting." << std::endl;
-          return false;
+        if (_config.eoat_selection == EoatSelection::WSG) {
+          WSGGripper::WSGGripperConfig eoat_config;
+          try {
+            eoat_config.deserialize(config["wsg_gripper" + std::to_string(id)]);
+          } catch (const std::exception& e) {
+            std::cerr << "Failed to load WSGGripper config: " << e.what()
+                      << std::endl;
+            return false;
+          }
+          eoat_ptrs.emplace_back(new WSGGripper);
+          WSGGripper* wsggripper_ptr =
+              static_cast<WSGGripper*>(eoat_ptrs[id].get());
+          if (!wsggripper_ptr->init(time0, eoat_config)) {
+            std::cerr << "Failed to initialize WSGGripper for id " << id
+                      << ". Exiting." << std::endl;
+            return false;
+          }
+        } else if (_config.eoat_selection == EoatSelection::FRANKA_GRIPPER) {
+          FrankaGripper::FrankaGripperConfig eoat_config;
+          try {
+            eoat_config.deserialize(
+                config["franka_gripper" + std::to_string(id)]);
+          } catch (const std::exception& e) {
+            std::cerr << "Failed to load FrankaGripper config: " << e.what()
+                      << std::endl;
+            return false;
+          }
+          eoat_ptrs.emplace_back(new FrankaGripper);
+          FrankaGripper* franka_gripper_ptr =
+              static_cast<FrankaGripper*>(eoat_ptrs[id].get());
+          if (!franka_gripper_ptr->init(time0, eoat_config)) {
+            std::cerr << "Failed to initialize FrankaGripper for id " << id
+                      << ". Exiting." << std::endl;
+            return false;
+          }
         }
       }
 

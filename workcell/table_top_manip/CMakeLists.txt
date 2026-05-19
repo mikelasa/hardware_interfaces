@@ -37,6 +37,7 @@ target_link_libraries(ManipServer
   RQSensorLinux
   UR_RTDE
   WSG_GRIPPER
+  FRANKA_GRIPPER
   COIN_FT
   HI_COMMON
   FRANKA

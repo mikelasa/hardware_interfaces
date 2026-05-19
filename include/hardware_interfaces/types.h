@@ -37,6 +37,8 @@ enum class CameraSelection { NONE, GOPRO, REALSENSE, USBCAM };
 
 enum class RobotSelection {UR_RTDE, FRANKA };
 
+enum class EoatSelection { NONE, WSG, FRANKA_GRIPPER };
+
 enum class ControllerSelection {IMPEDANCE_CONTROLLER, ADMITTANCE_CONTROLLER };
 
 enum class TeleopSelection { NONE, SPACEMOUSE, GAMEPAD, GELLO };

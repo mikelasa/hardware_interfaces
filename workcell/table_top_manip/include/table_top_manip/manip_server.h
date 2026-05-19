@@ -33,6 +33,7 @@
 #include <ur_rtde/ur_rtde.h>
 #include <franka/franka.h>
 #include <wsg_gripper/wsg_gripper.h>
+#include <franka_gripper/franka_gripper.h>
 #include <spacemouse/spacemouse.h>
 #include <gamepad/gamepad.h>
 #include <gello/gello.h>
@@ -47,6 +48,24 @@ struct RobotLogData {
   RUT::Vector7d q;        // joint positions
   RUT::Vector7d dq;       // joint velocities
   RUT::Vector7d ddq;      // joint accelerations
+};
+
+struct GripperPreset {
+  double width{0.0};        // target gripper width in meters
+  double force{0.0};        // N — 0 uses move(), >force_threshold uses grasp()
+  double duration_ms{1000}; // time to reach target from now
+
+  bool deserialize(const YAML::Node& node) {
+    try {
+      width = node["width"].as<double>();
+      force = node["force"].as<double>();
+      if (node["duration_ms"]) duration_ms = node["duration_ms"].as<double>();
+    } catch (const std::exception& e) {
+      std::cerr << "[GripperPreset] Failed to load: " << e.what() << std::endl;
+      return false;
+    }
+    return true;
+  }
 };
 
 struct ManipServerConfig {
@@ -68,12 +87,15 @@ struct ManipServerConfig {
   int joint_sensor_frequency{1000};
   double wrench_sensor_filter_alpha{0.1};  // EMA pre-filter on raw wrench before haptic use
   RobotSelection robot_selection{RobotSelection::FRANKA};
+  EoatSelection eoat_selection{EoatSelection::WSG};
   std::vector<CameraSelection> camera_selection{};  // one entry per camera id
   ForceSensingMode force_sensing_mode{ForceSensingMode::NONE};
   ControllerSelection controller_selection{ControllerSelection::IMPEDANCE_CONTROLLER};
   TeleopSelection teleop_device{TeleopSelection::GAMEPAD};
   RUT::Matrix6d low_damping{};
   std::vector<int> output_rgb_hw{};
+  GripperPreset gripper_open_preset{};
+  GripperPreset gripper_close_preset{};
 
   bool deserialize(const YAML::Node& node) {
     try {
@@ -97,6 +119,9 @@ struct ManipServerConfig {
         wrench_sensor_filter_alpha = node["wrench_sensor_filter_alpha"].as<double>();
       robot_selection = string_to_enum<RobotSelection>(
           node["robot_selection"].as<std::string>());
+      if (node["eoat_selection"])
+        eoat_selection = string_to_enum<EoatSelection>(
+            node["eoat_selection"].as<std::string>());
       if (node["camera_selection"].IsSequence()) {
         for (const auto& item : node["camera_selection"])
           camera_selection.push_back(
@@ -115,6 +140,10 @@ struct ManipServerConfig {
       low_damping = RUT::deserialize_vector<RUT::Vector6d>(node["low_damping"])
                         .asDiagonal();
       output_rgb_hw = node["output_rgb_hw"].as<std::vector<int>>();
+      if (node["gripper_open_preset"])
+        gripper_open_preset.deserialize(node["gripper_open_preset"]);
+      if (node["gripper_close_preset"])
+        gripper_close_preset.deserialize(node["gripper_close_preset"]);
 
     } catch (const std::exception& e) {
       std::cerr << "Failed to load the config file: " << e.what() << std::endl;

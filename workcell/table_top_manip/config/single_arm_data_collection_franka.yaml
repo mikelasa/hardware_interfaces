@@ -16,6 +16,7 @@ run_robot_thread: True
 run_wrench_thread: True
 run_rgb_thread: True
 run_eoat_thread: false
+eoat_selection: "FRANKA_GRIPPER" # "FRANKA_GRIPPER" or "EOAT"
 teleop: false
 plot_rgb: false
 plot_wrench: false
@@ -40,7 +41,7 @@ wrench_sensor_filter_alpha: 0.05  # Pre-filter on raw joint-sensor wrench (lower
 franka0:
   robot_ip: "172.17.6.164"
   log_size: 50
-  tcp_mass: 0.3
+  tcp_mass: 0.0 #0.3
   fx_c_load: [0.0, 0.0, 0.03]
   tcp_inertia: [0.1, 0.0, 0.0,
                 0.0, 0.1, 0.0,
@@ -67,6 +68,31 @@ franka0:
     max_incre_rad: 0.2
     max_incre_joint_rad: 0.0628
     safe_zone: [-0.5, 0.7, -0.9, -0.2, 0.2, 0.8]
+
+gripper_open_preset:
+  width: 0.08       # m — fully open
+  force: 0.0        # N — 0 means move(), not grasp()
+  duration_ms: 800  # ms to reach target
+
+gripper_close_preset:
+  width: 0.0        # m — fully closed
+  force: 20.0       # N — triggers grasp() in FrankaGripper
+  duration_ms: 1200 # ms to reach target
+
+franka_gripper0:
+  robot_ip: "172.17.6.164"       # same IP as the arm
+  move_speed: 0.1                # m/s
+  grasp_speed: 0.05              # m/s — slower for grasping
+  grasp_epsilon_inner: 0.005     # m
+  grasp_epsilon_outer: 0.005     # m
+  position_threshold: 0.001      # m — min change to issue a new command
+  force_threshold: 0.5           # N — above this uses grasp() instead of move()
+  js_interface_config:
+    num_joints: 1
+    range_safety_mode: "SAFETY_MODE_TRUNCATE"
+    incre_safety_mode: "SAFETY_MODE_NONE"
+    max_incre: 0.08
+    safe_zone: [0.0, 0.08]       # gripper width range in meters
 
 realsense0: # Intel Realsense D405
   width: 848
