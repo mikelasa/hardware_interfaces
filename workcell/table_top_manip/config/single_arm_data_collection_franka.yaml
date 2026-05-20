@@ -41,7 +41,7 @@ wrench_sensor_filter_alpha: 0.05  # Pre-filter on raw joint-sensor wrench (lower
 franka0:
   robot_ip: "172.17.6.164"
   log_size: 50
-  tcp_mass: 0.0 #0.3
+  tcp_mass: 0.4 #0.3
   fx_c_load: [0.0, 0.0, 0.03]
   tcp_inertia: [0.1, 0.0, 0.0,
                 0.0, 0.1, 0.0,

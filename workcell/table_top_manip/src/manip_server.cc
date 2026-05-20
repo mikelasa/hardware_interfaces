@@ -1066,6 +1066,11 @@ const Eigen::VectorXd ManipServer::get_vel_timestamps_ms(int id) {
 const Eigen::VectorXd ManipServer::get_eoat_timestamps_ms(int id) {
   return _eoat_timestamps_ms[id];
 }
+const Eigen::MatrixXd ManipServer::get_eoat(int k, int id) {
+  std::lock_guard<std::mutex> lock(_eoat_buffer_mtxs[id]);
+  _eoat_timestamps_ms[id] = _eoat_timestamp_ms_buffers[id].get_last_k(k);
+  return _eoat_buffers[id].get_last_k(k);
+}
 
 const double ManipServer::get_test_timestamp_ms() {
   return _test_timestamp_ms;
