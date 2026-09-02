@@ -200,7 +200,7 @@ void Gamepad::parse_joystick_event(const js_event& event) {
   if (type == JS_EVENT_BUTTON) {
     // Button event
     int button_state = event.value ? 1 : 0;
-    
+
     switch (event.number) {
       case 0: current_data_.button_a = button_state; break;
       case 1: current_data_.button_b = button_state; break;

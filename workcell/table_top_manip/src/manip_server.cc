@@ -490,27 +490,13 @@ bool ManipServer::initialize(const std::string& config_path) {
       // Parse gamepad-specific config
       auto gamepad_node = config["gamepad" + std::to_string(id)];
       if (gamepad_node) {
-        if (gamepad_node["device_path"]) {
-          gamepad_config.device_path = gamepad_node["device_path"].as<std::string>();
-        }
-        if (gamepad_node["deadzone_stick"]) {
-          gamepad_config.deadzone_stick = gamepad_node["deadzone_stick"].as<double>();
-        }
-        if (gamepad_node["deadzone_trigger"]) {
-          gamepad_config.deadzone_trigger = gamepad_node["deadzone_trigger"].as<double>();
-        }
-        if (gamepad_node["update_rate_hz"]) {
-          gamepad_config.update_rate_hz = gamepad_node["update_rate_hz"].as<int>();
-        }
-        if (gamepad_node["translation_scale"]) {
+        gamepad_config.deserialize(gamepad_node);
+        if (gamepad_node["translation_scale"])
           translation_scale = gamepad_node["translation_scale"].as<double>();
-        }
-        if (gamepad_node["rotation_scale"]) {
+        if (gamepad_node["rotation_scale"])
           rotation_scale = gamepad_node["rotation_scale"].as<double>();
-        }
-        if (gamepad_node["input_filter_alpha"]) {
+        if (gamepad_node["input_filter_alpha"])
           input_filter_alpha = gamepad_node["input_filter_alpha"].as<double>();
-        }
       }
 
       gamepad_ptrs.emplace_back(new Gamepad);
@@ -888,6 +874,14 @@ bool ManipServer::initialize(const std::string& config_path) {
   // ============================================================================
   
   std::cout << "[ManipServer] All threads are ready." << std::endl;
+
+  if (_config.wrench_bias_filter_enabled) {
+    if (!_wrench_bias_corrector.load(_config.wrench_bias_filter_model_path)) {
+      std::cerr << "[ManipServer] WARNING: wrench_bias_filter enabled but model "
+                   "failed to load — correction disabled.\n";
+    }
+  }
+
   std::cout << "[ManipServer] Done initialization." << std::endl;
   return true;
 }

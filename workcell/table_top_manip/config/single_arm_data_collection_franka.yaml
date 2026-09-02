@@ -7,7 +7,7 @@
 #    damping: low damping
 #    max_spring_force_magnitude: 15
 # always check the first few parameters:
-data_folder: "/home/robotlab/data/real/flip_up_V3"  # folder to save data
+data_folder: "/home/robotlab/data/real/demonstration_impacts/E1_minimum_demos/200demos"  # folder to save data
 mock_hardware: false
 bimanual: false
 num_cameras: 1
@@ -37,15 +37,19 @@ output_rgb_hw: [224, 224]
 joint_sensor_frequency: 1000
 wrench_sensor_filter_alpha: 0.05  # Pre-filter on raw joint-sensor wrench (lower=smoother, higher=faster response)
 
+wrench_bias_filter:
+  enabled: false
+  model_path: "/home/robotlab/data/wrench_bias_models/wrench_bias.bin"
+
 
 franka0:
   robot_ip: "172.17.6.164"
   log_size: 50
-  tcp_mass: 0.4 #0.3
-  fx_c_load: [0.0, 0.0, 0.03]
-  tcp_inertia: [0.1, 0.0, 0.0,
-                0.0, 0.1, 0.0,
-                0.0, 0.0, 0.1]
+  tcp_mass: 0.0 #0.3
+  fx_c_load: [0.0, 0.0, 0.0]
+  tcp_inertia: [0.00001, 0.0, 0.0,
+                0.0, 0.00001, 0.0,
+                0.0, 0.0, 0.00001]
   deviation: [10.0, 3.12, 6.283185307179586]
   kDeltaT: 1e-3
   CutoffFrequency: 100
@@ -108,8 +112,12 @@ impedance_controller0:
   log_file_path: "/home/robotlab/data/controller_log/impedance_controller.log"
   alert_overrun: false
   compliance6d:
-    stiffness: [1500, 1500, 1500, 100, 100, 100] # 
-    damping: [77.5, 77.5, 77.5, 10, 10 ,10] # applying critical damping: D = 2*sqrt(K*m)
+    #stiffness: [1500, 1500, 1500, 100, 100, 100] # 
+    #damping: [46.9, 46.9, 46.9, 10, 10 ,10] # applying critical damping: D = 2*sqrt(K*m)
+    stiffness: [800, 800, 800, 50, 50, 50] # 
+    damping: [34, 34, 34, 8.56, 8.56 , 8.56] # applying critical damping: D = 2*sqrt(K*m)
+    #stiffness: [500, 500, 500, 50, 50, 50] # 
+    #damping: [27, 27, 27, 5, 5 ,5]
     nullspace_stiffness: [0, 0, 0, 0, 0, 0, 0]
     nullspace_damping: [0, 0, 0, 0, 0, 0, 0]
     stiction: [0, 0, 0, 0, 0, 0] #stationary friction model
@@ -163,12 +171,11 @@ gamepad0:
   translation_scale: 1e-4
   rotation_scale: 2.5e-4
   input_filter_alpha: 0.15     # EMA smoothing on stick input (0=frozen, 1=raw, lower=smoother)
-  rumble_force_min_n: 10         # Minimum force to start rumble (N)
-  rumble_force_max_n: 20         # Force at max vibration (N)
+  rumble_force_min_n: 9         # Force (N) to start rumble — matches plot display
+  rumble_force_max_n: 14         # Force (N) at max vibration intensity
   rumble_duration_ms: 200        # Duration per rumble pulse (ms)
   rumble_refresh_ms: 150.0       # Min time between rumble refreshes (ms)
-  rumble_filter_alpha: 0.00      # Second-stage LPF on force magnitude (lower=smoother)
-  rumble_bias_alpha: 0.005       # Baseline tracker speed (higher=adapts faster to free-space noise)
+  precision_scale: 0.4           # Speed multiplier when RB held (0.1 = 10x slower)
 
 gello0:
   port: "/dev/ttyACM0"

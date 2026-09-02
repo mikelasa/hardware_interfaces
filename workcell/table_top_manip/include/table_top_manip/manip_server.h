@@ -23,6 +23,7 @@
 #include <hardware_interfaces/js_interfaces.h>
 #include <hardware_interfaces/robot_interfaces.h>
 #include <hardware_interfaces/types.h>
+#include "wrench_bias_corrector.h"
 // hardware used in this app
 #include <ati_netft/ati_netft.h>
 #include <coinft/coin_ft.h>
@@ -97,6 +98,9 @@ struct ManipServerConfig {
   GripperPreset gripper_open_preset{};
   GripperPreset gripper_close_preset{};
 
+  bool wrench_bias_filter_enabled{false};
+  std::string wrench_bias_filter_model_path{""};
+
   bool deserialize(const YAML::Node& node) {
     try {
       data_folder = node["data_folder"].as<std::string>();
@@ -144,6 +148,13 @@ struct ManipServerConfig {
         gripper_open_preset.deserialize(node["gripper_open_preset"]);
       if (node["gripper_close_preset"])
         gripper_close_preset.deserialize(node["gripper_close_preset"]);
+      if (node["wrench_bias_filter"]) {
+        const auto& wbf = node["wrench_bias_filter"];
+        if (wbf["enabled"])
+          wrench_bias_filter_enabled = wbf["enabled"].as<bool>();
+        if (wbf["model_path"])
+          wrench_bias_filter_model_path = wbf["model_path"].as<std::string>();
+      }
 
     } catch (const std::exception& e) {
       std::cerr << "Failed to load the config file: " << e.what() << std::endl;
@@ -238,6 +249,9 @@ class ManipServer {
  private:
   // config
   ManipServerConfig _config;
+
+  // wrench bias correction MLP (optional, loaded when wrench_bias_filter.enabled)
+  WrenchBiasCorrector _wrench_bias_corrector{};
 
   // additional configs as local variables
   std::vector<RUT::Matrix6d> _stiffnesses_high{};

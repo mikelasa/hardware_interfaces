@@ -66,12 +66,13 @@ class Gamepad : public TeleopInterface {
     double deadzone_trigger{0.05};              // Deadzone for triggers (0-1)
     int update_rate_hz{100};                    // Update frequency
     // Haptic feedback parameters
-    double rumble_force_min_n{3.0};             // Minimum force to start rumble (N)
+    double rumble_force_min_n{6.0};             // Minimum force to start rumble (N)
     double rumble_force_max_n{10.0};            // Force at max vibration (N)
     uint16_t rumble_duration_ms{200};           // Duration per rumble pulse (ms)
     double rumble_refresh_ms{150.0};            // Min time between rumble refreshes (ms)
     double rumble_filter_alpha{0.2};            // Low-pass filter for force (0.0-1.0, lower=smoother)
     double rumble_bias_alpha{0.005};            // Baseline tracker speed (higher=adapts faster to free-space noise)
+    double precision_scale{0.1};               // Scale multiplier when precision button held
 
     bool deserialize(const YAML::Node& node) {
       try {
@@ -85,6 +86,7 @@ class Gamepad : public TeleopInterface {
         if (node["rumble_refresh_ms"]) rumble_refresh_ms = node["rumble_refresh_ms"].as<double>();
         if (node["rumble_filter_alpha"]) rumble_filter_alpha = node["rumble_filter_alpha"].as<double>();
         if (node["rumble_bias_alpha"]) rumble_bias_alpha = node["rumble_bias_alpha"].as<double>();
+        if (node["precision_scale"]) precision_scale = node["precision_scale"].as<double>();
         return true;
       } catch (const std::exception& e) {
         std::cerr << "Gamepad config error: " << e.what() << std::endl;
@@ -115,6 +117,7 @@ class Gamepad : public TeleopInterface {
   double get_rumble_refresh_ms() const { return config_.rumble_refresh_ms; }
   double get_rumble_filter_alpha() const { return config_.rumble_filter_alpha; }
   double get_rumble_bias_alpha() const { return config_.rumble_bias_alpha; }
+  double get_precision_scale() const { return config_.precision_scale; }
 
   //force feedback 
   void set_rumble(uint16_t strong, uint16_t weak, uint16_t duration_ms);

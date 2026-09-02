@@ -748,16 +748,16 @@ bool FRANKA::Implementation::getCurrentWrenchTool(RUT::Vector6d& wrench) {
     try {
         // Apply filtering to the wrench
         static RUT::Vector6d filtered_wrench = RUT::Vector6d::Zero();
-        wrench = Eigen::Map<const RUT::Vector6d>(robot_state.K_F_ext_hat_K.data());
+        wrench = Eigen::Map<const RUT::Vector6d>(robot_state.O_F_ext_hat_K.data());
 
         for (size_t i = 0; i < 6; ++i) {
             filtered_wrench[i] = franka::lowpassFilter(config.kDeltaT,
                                             filtered_wrench[i],
-                                            robot_state.K_F_ext_hat_K[i],
-                                            franka::kDefaultCutoffFrequency);
+                                            robot_state.O_F_ext_hat_K[i],
+                                            10);
         }
         
-        filtered_wrench = Eigen::Map<const RUT::Vector6d>(robot_state.K_F_ext_hat_K.data());
+        wrench = filtered_wrench;
 
         return true;
     } catch (const std::exception& e) {

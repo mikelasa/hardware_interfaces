@@ -174,6 +174,13 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
       franka_ptr->getCurrentPose(pose_fb);
       franka_ptr->getCurrentWrenchTool(wrench_fb_ur);
       state = franka_ptr->getRobotState();
+      if (_config.wrench_bias_filter_enabled && _wrench_bias_corrector.is_loaded()) {
+        Eigen::Matrix<double, 7, 1> q =
+            Eigen::Map<const Eigen::Matrix<double, 7, 1>>(state.q.data());
+        Eigen::Matrix<double, 7, 1> tau_J =
+            Eigen::Map<const Eigen::Matrix<double, 7, 1>>(state.tau_J.data());
+        wrench_fb_ur -= _wrench_bias_corrector.predict(q, tau_J);
+      }
       
       // Recompute Jacobian for current configuration
       std::array<double, 42> jacobian_array = 
@@ -2258,14 +2265,11 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   const double   RUMBLE_FORCE_MAX_N       = gamepad_ptrs[id]->get_rumble_force_max_n();
   const uint16_t RUMBLE_DURATION_MS       = gamepad_ptrs[id]->get_rumble_duration_ms();
   const double   RUMBLE_REFRESH_MS        = gamepad_ptrs[id]->get_rumble_refresh_ms();
-  const double   RUMBLE_FILTER_ALPHA      = gamepad_ptrs[id]->get_rumble_filter_alpha();
   const double   RUMBLE_HYSTERESIS_N      = 1.0;   // Deadband (N) around threshold
-  const double   RUMBLE_BIAS_ALPHA        = gamepad_ptrs[id]->get_rumble_bias_alpha();
   const uint16_t RUMBLE_WEAK              = 0;     // Weak rumble motor strength
-  
+  const double   PRECISION_SCALE          = gamepad_ptrs[id]->get_precision_scale();
+
   double last_rumble_ms = -1e9;          // Timestamp of last haptic feedback
-  double force_norm_filtered = 0.0;      // Low-pass filtered force magnitude
-  double force_bias = 0.0;               // Slow-varying baseline (gravity offset)
   bool rumble_active = false;            // Current haptic feedback state
   
   uint64_t haptic_feedback_count = 0;    // Statistics: total haptic events
@@ -2275,7 +2279,6 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   std::cout << header << "  Force threshold: " << RUMBLE_FORCE_MIN_N << " - " 
             << RUMBLE_FORCE_MAX_N << " N" << std::endl;
   std::cout << header << "  Hysteresis deadband: " << RUMBLE_HYSTERESIS_N << " N" << std::endl;
-  std::cout << header << "  Filter constant (α): " << RUMBLE_FILTER_ALPHA << std::endl;
 
   // ============================================================================
   // Step 8: Sync Initial Base Pose for Rotation Accumulation
@@ -2376,12 +2379,15 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
       // Quadratic curve: preserves sign, squares magnitude for finer near-center control
       auto curve = [](double v) { return std::copysign(v * v, v); };
 
-      tx_scaled = curve(gp_data.left_stick_y)  * TRANSLATION_SCALE;
-      ty_scaled = -curve(gp_data.left_stick_x) * TRANSLATION_SCALE;
-      tz_scaled = curve(gp_data.left_trigger - gp_data.right_trigger) * TRANSLATION_SCALE;
+      const double active_scale = (!_config.run_eoat_thread && gp_data.button_rb)
+                                      ? PRECISION_SCALE : 1.0;
 
-      ry_scaled = -curve(gp_data.right_stick_y) * ROTATION_SCALE;
-      rz_scaled =  curve(gp_data.right_stick_x) * ROTATION_SCALE;
+      tx_scaled = curve(gp_data.left_stick_y)  * TRANSLATION_SCALE * active_scale;
+      ty_scaled = -curve(gp_data.left_stick_x) * TRANSLATION_SCALE * active_scale;
+      tz_scaled = curve(gp_data.left_trigger - gp_data.right_trigger) * TRANSLATION_SCALE * active_scale;
+
+      ry_scaled = -curve(gp_data.right_stick_y) * ROTATION_SCALE * active_scale;
+      rz_scaled =  curve(gp_data.right_stick_x) * ROTATION_SCALE * active_scale;
     }
 
     // Apply EMA filter to smooth out stick noise and sudden step inputs
@@ -2410,43 +2416,17 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     const double now_ms = timer.toc_ms();
 
     // =====================================================================
-    // Phase 3a: Low-Pass Filter Force Measurement
+    // Phase 3: Apply Hysteresis for On/Off Decision
     // =====================================================================
-    // Smooth noisy sensor data for more stable haptic feedback
-    // LPF: y[n] = α*x[n] + (1-α)*y[n-1]
-    
-    force_norm_filtered = RUMBLE_FILTER_ALPHA * force_norm + 
-                         (1.0 - RUMBLE_FILTER_ALPHA) * force_norm_filtered;
+    // Same raw force norm shown in the plot — no bias subtraction.
+    // rumble_force_min_n controls when rumble starts.
 
-    // =====================================================================
-    // Phase 3b: Track Slow Baseline (Gravity/Friction Offset)
-    // =====================================================================
-    // Adaptive bias estimation to cancel constant offsets
-    // Only update when near threshold (avoid adaptation in high-force regions)
-    
-    if (force_norm_filtered < RUMBLE_FORCE_MIN_N + RUMBLE_HYSTERESIS_N) {
-      force_bias = (1.0 - RUMBLE_BIAS_ALPHA) * force_bias + 
-                   RUMBLE_BIAS_ALPHA * force_norm_filtered;
-    }
-
-    // =====================================================================
-    // Phase 3c: Correct Force Signal
-    // =====================================================================
-    // Remove estimated baseline to get true external force
-    
-    const double force_corrected = std::max(0.0, force_norm_filtered - force_bias);
-
-    // =====================================================================
-    // Phase 3d: Apply Hysteresis for On/Off Decision
-    // =====================================================================
-    // Prevents chattering at threshold boundary
-    
     const double rumble_on_threshold  = RUMBLE_FORCE_MIN_N;
     const double rumble_off_threshold = std::max(0.0, RUMBLE_FORCE_MIN_N - RUMBLE_HYSTERESIS_N);
 
-    if (force_corrected >= rumble_on_threshold) {
+    if (force_norm >= rumble_on_threshold) {
       rumble_active = true;
-    } else if (force_corrected <= rumble_off_threshold) {
+    } else if (force_norm <= rumble_off_threshold) {
       rumble_active = false;
     }
     // else: state unchanged (hysteresis range)
@@ -2459,7 +2439,7 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     uint16_t vibration_magnitude = 0;
     if (rumble_active) {
       // Force above minimum threshold
-      double force_above_min = std::max(0.0, force_corrected - RUMBLE_FORCE_MIN_N);
+      double force_above_min = std::max(0.0, force_norm - RUMBLE_FORCE_MIN_N);
       
       // Normalize to 0-1 range
       double force_scaled = std::min(force_above_min, RUMBLE_FORCE_MAX_N - RUMBLE_FORCE_MIN_N) /
