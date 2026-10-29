@@ -7,19 +7,19 @@
 #    damping: low damping
 #    max_spring_force_magnitude: 15
 # always check the first few parameters:
-data_folder: "/home/robotlab/data/real/demonstration_impacts/E1_minimum_demos/200demos"  # folder to save data
+data_folder: "/home/robotlab/data/real/CAP5/curva"  # folder to save data
 mock_hardware: false
 bimanual: false
-num_cameras: 1
+num_cameras: 2
 
 run_robot_thread: True
 run_wrench_thread: True
 run_rgb_thread: True
 run_eoat_thread: false
 eoat_selection: "FRANKA_GRIPPER" # "FRANKA_GRIPPER" or "EOAT"
-teleop: false
-plot_rgb: false
-plot_wrench: false
+teleop: False
+plot_rgb: False
+plot_wrench: False
 
 rgb_buffer_size: 11
 robot_buffer_size: 1200 #duplicado ya que los datos se leen el doble de rapido.
@@ -40,6 +40,45 @@ wrench_sensor_filter_alpha: 0.05  # Pre-filter on raw joint-sensor wrench (lower
 wrench_bias_filter:
   enabled: false
   model_path: "/home/robotlab/data/wrench_bias_models/wrench_bias.bin"
+
+# Force-adaptive stiffness for teleoperation.
+# Makes the demonstrated stiffness vary with contact force, so the offline
+# stiffness labels (postprocess_add_virtual_target_label.py) carry real signal
+# instead of pinning at k_min. Only the translational 3x3 block is adapted;
+# the rotational block stays at impedance_controller0.compliance6d.
+force_adaptive_teleop:
+  enabled: False # invalidates the fixed stifness in the controller
+  k_max: 1500           # N/m, free space and the two axes tangential to contact
+  # Raised from 500. The stiffness is a static map from |f| to k, so its chatter
+  # is the force chatter times the schedule slope (k_max-k_min)/(f_high-f_low).
+  # 700 cuts that slope from 125 to 100 N/m per N -- measured over 53 episodes,
+  # k chatter p95 drops 6017 -> 4813 N/m/s -- and it shrinks the worst-case
+  # setpoint snap, f_safe/k_min, from 4.0 to 2.9 cm. It does NOT narrow the
+  # label range: postprocess_add_virtual_target_label.py re-derives k from the
+  # measured force with its own k_min=500, so the labels still span the full
+  # 500..1500. Watch for the one regression this can cause: a stiffer contact
+  # means more force for the same penetration, which pushes the demonstrated
+  # force up toward f_high and back toward the saturation FAT exists to avoid.
+  # analyze_label_filter_cutoff.py over a fresh session will show it.
+  k_min: 500            # N/m, along the contact force direction, reached at f_high
+  f_low: 10.0           # 7 for flip, 10 for wipe
+  f_high: 20.0          # 15 for flip, 20 for wipe
+  f_safe: 25.0        # 20 for flip, 25 for wipe -- above this the controller is too stiff to be safe
+  effective_mass_kg: 0.361   # m in D = 2*sqrt(K*m); from the K=800 / D=34 pair below
+  contact_hysteresis_n: 2.0  # N, deadband around f_low (enter 9 N, exit 5 N)
+  contact_hold_ms: 250.0     # ms below the exit threshold before declaring free space
+  # Softening is instantaneous, so this rate alone sets the sawtooth amplitude
+  # during an intermittent contact: k drops to the schedule value on every force
+  # spike and climbs back at (k_max - k_min) / k_recovery_time_s in between.
+  # At 0.5 s that is 2000 N/m/s, so a spike every 200 ms gave a 400 N/m swing.
+  # At 2.0 s it is 500 N/m/s, i.e. 100 N/m over the same gap.
+  k_recovery_time_s: 2.0     # s to ramp stiffness back up (softening is instant)
+  # Must come down together with contact_hold_ms: the normal keeps updating
+  # while in contact, and during a dropout force_world is near zero, so
+  # normal_raw is noise. A longer hold means more cycles of that, and this is
+  # what keeps the soft axis from chasing it. tau = dt/alpha = 100 ms at 1 kHz.
+  force_direction_filter_alpha: 0.01  # EMA on the contact normal (lower = steadier)
+  snap_setpoint_on_exit: true # drop the accumulated setpoint offset when contact ends
 
 
 franka0:
@@ -101,7 +140,7 @@ franka_gripper0:
 realsense0: # Intel Realsense D405
   width: 848
   height: 480
-  framerate: 60
+  framerate: 30
   enable_color: true
   enable_depth: false
   align_depth_to_color: false
@@ -160,7 +199,7 @@ gopro0:
   frame_height: 1080
   crop_rows: [0, 1080] # set to negative to disable cropping
   crop_cols: [420, 1500]
-  fps: 60
+  fps: 30
   cv_num_threads: 8
 
 gamepad0:

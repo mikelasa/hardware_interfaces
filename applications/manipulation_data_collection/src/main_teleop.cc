@@ -88,19 +88,27 @@ int main() {
 
     // wait for user to stop the episode
     std::getchar();
-
-    // set the robot to hold position with high stiffness
-    server.set_high_level_maintain_position();
     double episode_duration_s = duration_timer.toc_ms() / 1000.0;
-    std::cout << "[main] Episode finished with duration " << episode_duration_s
-              << "s. Waiting for threads to stop saving." << std::endl;
+    double stop_request_ms = duration_timer.toc_ms();
 
-    // stop saving data
+    // Close the episode BEFORE parking the robot. set_high_level_maintain_position()
+    // clears the cmd buffer that the 1kHz teleop loop is filling, reads the pose with
+    // getCartesian() (a blocking readOnce on the same UDP socket the control thread
+    // uses), re-targets the arm at its *measured* pose and then sleeps 300ms. In
+    // contact the measured pose lags the commanded target, so that is a step in the
+    // reference: a torque/pose transient the operator never demonstrated. Parking
+    // while _ctrl_flag_saving is still true put ~300ms+ of that transient at the end
+    // of every episode's JSONs.
     server.stop_saving_data();
     while (server.is_saving_data()) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
-    std::cout << "[main] All threads have stopped saving data." << std::endl;
+    std::cout << "[main] Episode finished with duration " << episode_duration_s
+              << "s. All threads stopped saving after "
+              << (duration_timer.toc_ms() - stop_request_ms) << "ms." << std::endl;
+
+    // only now set the robot to hold position with high stiffness
+    server.set_high_level_maintain_position();
 
     std::cout << "[main] What to do:\n";
     std::cout << "[main]    q to quit\n";

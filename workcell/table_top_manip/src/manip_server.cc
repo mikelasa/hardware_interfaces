@@ -752,6 +752,12 @@ bool ManipServer::initialize(const std::string& config_path) {
     _poses_fb_mtxs.emplace_back();
     _wrench_fb.push_back(Eigen::VectorXd());
     _wrench_fb_mtxs.emplace_back();
+    _teleop_stiffness.push_back(RUT::Matrix6d::Zero());
+    _teleop_damping.push_back(RUT::Matrix6d::Zero());
+    _teleop_compliance_valid.push_back(false);
+    _teleop_compliance_mtxs.emplace_back();
+    _teleop_k_low.push_back(_config.fat_k_max);
+    _teleop_in_contact.push_back(false);
     _pose_timestamps_ms.push_back(Eigen::VectorXd());
     _vel_timestamps_ms.push_back(Eigen::VectorXd());
     _eoat_timestamps_ms.push_back(Eigen::VectorXd());

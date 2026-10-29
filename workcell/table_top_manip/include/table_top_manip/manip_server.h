@@ -101,6 +101,22 @@ struct ManipServerConfig {
   bool wrench_bias_filter_enabled{false};
   std::string wrench_bias_filter_model_path{""};
 
+  // force-adaptive stiffness during teleoperation (see force_adaptive_teleop
+  // in the yaml). Adapts only the translational block of the impedance
+  // stiffness/damping, as a function of the measured contact force.
+  bool fat_enabled{false};
+  double fat_k_max{1500.0};
+  double fat_k_min{500.0};
+  double fat_f_low{7.0};
+  double fat_f_high{15.0};
+  double fat_f_safe{20.0};
+  double fat_effective_mass_kg{0.361};
+  double fat_contact_hysteresis_n{1.0};
+  double fat_contact_hold_ms{30.0};
+  double fat_k_recovery_time_s{0.5};
+  double fat_force_direction_filter_alpha{0.05};
+  bool fat_snap_setpoint_on_exit{true};
+
   bool deserialize(const YAML::Node& node) {
     try {
       data_folder = node["data_folder"].as<std::string>();
@@ -154,6 +170,44 @@ struct ManipServerConfig {
           wrench_bias_filter_enabled = wbf["enabled"].as<bool>();
         if (wbf["model_path"])
           wrench_bias_filter_model_path = wbf["model_path"].as<std::string>();
+      }
+      if (node["force_adaptive_teleop"]) {
+        const auto& fat = node["force_adaptive_teleop"];
+        if (fat["enabled"]) fat_enabled = fat["enabled"].as<bool>();
+        if (fat["k_max"]) fat_k_max = fat["k_max"].as<double>();
+        if (fat["k_min"]) fat_k_min = fat["k_min"].as<double>();
+        if (fat["f_low"]) fat_f_low = fat["f_low"].as<double>();
+        if (fat["f_high"]) fat_f_high = fat["f_high"].as<double>();
+        if (fat["f_safe"]) fat_f_safe = fat["f_safe"].as<double>();
+        if (fat["effective_mass_kg"])
+          fat_effective_mass_kg = fat["effective_mass_kg"].as<double>();
+        if (fat["contact_hysteresis_n"])
+          fat_contact_hysteresis_n = fat["contact_hysteresis_n"].as<double>();
+        if (fat["contact_hold_ms"])
+          fat_contact_hold_ms = fat["contact_hold_ms"].as<double>();
+        if (fat["k_recovery_time_s"])
+          fat_k_recovery_time_s = fat["k_recovery_time_s"].as<double>();
+        if (fat["force_direction_filter_alpha"])
+          fat_force_direction_filter_alpha =
+              fat["force_direction_filter_alpha"].as<double>();
+        if (fat["snap_setpoint_on_exit"])
+          fat_snap_setpoint_on_exit = fat["snap_setpoint_on_exit"].as<bool>();
+
+        if (fat_f_high <= fat_f_low) {
+          std::cerr << "[ManipServer] force_adaptive_teleop: f_high must be "
+                       "greater than f_low. Disabling the layer.\n";
+          fat_enabled = false;
+        }
+        if (fat_k_min <= 0.0 || fat_k_max < fat_k_min) {
+          std::cerr << "[ManipServer] force_adaptive_teleop: need "
+                       "0 < k_min <= k_max. Disabling the layer.\n";
+          fat_enabled = false;
+        }
+        if (fat_effective_mass_kg <= 0.0) {
+          std::cerr << "[ManipServer] force_adaptive_teleop: effective_mass_kg "
+                       "must be positive. Disabling the layer.\n";
+          fat_enabled = false;
+        }
       }
 
     } catch (const std::exception& e) {
@@ -391,6 +445,20 @@ class ManipServer {
   // shared variables between eoat thread and wrench thread
   std::vector<Eigen::VectorXd> _wrench_fb;
   std::deque<std::mutex> _wrench_fb_mtxs;
+
+  // shared variables between teleop thread and robot thread:
+  // force-adaptive compliance. teleop_loop recomputes the pair every cycle and
+  // robot_impedance_loop applies the latest one. This bypasses the stiffness
+  // schedule buffer (which carries no damping) and set_stiffness_matrix()
+  // (which contends on _controller_mtxs, held by the RT loop every cycle).
+  std::vector<RUT::Matrix6d> _teleop_stiffness;
+  std::vector<RUT::Matrix6d> _teleop_damping;
+  std::vector<bool> _teleop_compliance_valid;
+  std::deque<std::mutex> _teleop_compliance_mtxs;
+  // scalar mirror of the above, for the plot thread: k along the contact
+  // normal (the eigenvalue the schedule actually moves) and the FSM state.
+  std::vector<double> _teleop_k_low;
+  std::vector<bool> _teleop_in_contact;
 
   // loop functions
   void robot_admittance_loop(const RUT::TimePoint& time0, int robot_id);

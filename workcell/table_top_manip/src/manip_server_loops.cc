@@ -78,6 +78,7 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
   RUT::Vector7d ref_pose;             // Interpolated reference pose
   RUT::Vector7d torque_robot_cmd;     // Joint torque commands (7 joints)
   RUT::Matrix6d stiffness;            // Impedance stiffness matrix (6x6)
+  RUT::Matrix6d damping;              // Impedance damping matrix (6x6)
 
   // Initialize with safe defaults for mock hardware
   pose_fb << id, 0, 0, 1, 0, 0, 0;    // Identity pose with offset
@@ -276,18 +277,33 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
     // Phase 4: Update Impedance Stiffness Matrix (if scheduled)
     // ==========================================================================
     // Allows dynamic compliance adjustment during execution
-    
+
     bool new_stiffness_found = false;
-    {
+    bool new_damping_found = false;
+
+    // When the force-adaptive teleop layer is enabled it owns the compliance:
+    // it publishes a fresh stiffness/damping pair every cycle and takes
+    // priority over the stiffness schedule used by the inference path.
+    if (_config.fat_enabled) {
+      std::lock_guard<std::mutex> lock(_teleop_compliance_mtxs[id]);
+      if (_teleop_compliance_valid[id]) {
+        stiffness = _teleop_stiffness[id];
+        damping = _teleop_damping[id];
+        new_stiffness_found = true;
+        new_damping_found = true;
+      }
+    }
+
+    if (!new_stiffness_found) {
       std::lock_guard<std::mutex> lock(_stiffness_buffer_mtxs[id]);
-      
+
       if (!_stiffness_buffers[id].is_empty()) {
         double next_available_time_ms = _stiffness_timestamp_ms_buffers[id][0];
-        
+
         // Check if it's time to apply new stiffness
         if (time_now_ms > next_available_time_ms) {
           new_stiffness_found = true;
-          
+
           // Consume all stiffness updates up to current time
           while ((!_stiffness_timestamp_ms_buffers[id].is_empty()) &&
                  (_stiffness_timestamp_ms_buffers[id][0] < time_now_ms)) {
@@ -297,7 +313,7 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
         }
       }
     }
-    
+
     loop_profiler.stop("stiffness");
     loop_profiler.start();
     
@@ -324,7 +340,13 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
       if (new_stiffness_found) {
         _impedance_controllers[id].setStiffnessMatrix(stiffness);
       }
-      
+
+      // Apply the matching damping matrix (force-adaptive layer only; the
+      // stiffness schedule carries no damping and leaves it at the yaml value)
+      if (new_damping_found) {
+        _impedance_controllers[id].setDampingMatrix(damping);
+      }
+
       loop_profiler.stop("controller_set");
       loop_profiler.start();
       
@@ -1692,10 +1714,17 @@ void ManipServer::rgb_plot_loop() {
     color_mat_copy.push_back(cv::Mat());
   }
 
-  // Force display (runs in same thread — no OpenCV multi-thread issues)
+  // Force display (runs in same thread — no OpenCV multi-thread issues).
+  // Two stacked panels in one window: measured |F| on top, and below it the
+  // live stiffness along the contact normal. The lower panel is what the
+  // offline labels will reproduce, so a bar pinned at k_min while recording
+  // means the stiffness labels are saturated again.
+  const bool show_stiffness = _config.fat_enabled;
+  const int fdisp_w = show_stiffness ? 360 : 300;
+  const int fdisp_h = show_stiffness ? 250 : 120;
   if (_config.plot_wrench) {
     cv::namedWindow("Force [N]", cv::WINDOW_NORMAL);
-    cv::resizeWindow("Force [N]", 300, 120);
+    cv::resizeWindow("Force [N]", fdisp_w, fdisp_h);
   }
 
   {
@@ -1731,13 +1760,108 @@ void ManipServer::rgb_plot_loop() {
         fn = std::sqrt(fx*fx + fy*fy + fz*fz);
       }
 
-      cv::Mat fdisp(120, 300, CV_8UC3, cv::Scalar(20, 20, 20));
+      cv::Mat fdisp(fdisp_h, fdisp_w, CV_8UC3, cv::Scalar(20, 20, 20));
+      char buf[48];
+
+      // ---- Panel 1: measured force magnitude ----
       cv::putText(fdisp, "|F| [N]", {10, 35},
                   cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(160, 160, 160), 1);
-      char buf[32];
+
+      // Colour the reading against the thresholds that drive the stiffness
+      // schedule, so the operator can see which band they are pushing in.
+      cv::Scalar f_color(60, 220, 60);  // green: below f_low, k stays at k_max
+      if (show_stiffness) {
+        if (fn >= _config.fat_f_safe) {
+          f_color = cv::Scalar(60, 60, 240);    // red: at the clamp
+        } else if (fn >= _config.fat_f_high) {
+          f_color = cv::Scalar(40, 140, 240);   // orange: k is at k_min
+        } else if (fn >= _config.fat_f_low) {
+          f_color = cv::Scalar(60, 220, 220);   // yellow: on the ramp
+        }
+      }
       snprintf(buf, sizeof(buf), "%.2f", fn);
       cv::putText(fdisp, buf, {10, 100},
-                  cv::FONT_HERSHEY_SIMPLEX, 2.5, cv::Scalar(60, 220, 60), 3);
+                  cv::FONT_HERSHEY_SIMPLEX, 2.5, f_color, 3);
+
+      // ---- Panel 2: stiffness along the contact normal ----
+      if (show_stiffness) {
+        double k_low = _config.fat_k_max;
+        bool in_contact = false;
+        bool k_valid = false;
+        {
+          std::lock_guard<std::mutex> lock(_teleop_compliance_mtxs[_id_list[0]]);
+          k_valid = _teleop_compliance_valid[_id_list[0]];
+          k_low = _teleop_k_low[_id_list[0]];
+          in_contact = _teleop_in_contact[_id_list[0]];
+        }
+
+        const double k_min = _config.fat_k_min;
+        const double k_max = _config.fat_k_max;
+
+        cv::line(fdisp, {0, 118}, {fdisp_w, 118}, cv::Scalar(70, 70, 70), 1);
+
+        cv::putText(fdisp, "k [N/m]", {10, 146},
+                    cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(160, 160, 160), 1);
+
+        // Contact state badge, right-aligned on the same row
+        if (!k_valid) {
+          cv::putText(fdisp, "NO TELEOP", {235, 146},
+                      cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(120, 120, 120), 1);
+        } else if (in_contact) {
+          cv::putText(fdisp, "CONTACT", {250, 146},
+                      cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(40, 140, 240), 2);
+        } else {
+          cv::putText(fdisp, "FREE", {285, 146},
+                      cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(120, 120, 120), 1);
+        }
+
+        // Fraction of the k_min..k_max span, clamped for display
+        double k_frac = (k_max > k_min) ? (k_low - k_min) / (k_max - k_min) : 1.0;
+        k_frac = std::min(1.0, std::max(0.0, k_frac));
+
+        // Soft (k_min) reads orange-red, stiff (k_max) reads green
+        const cv::Scalar k_color(
+            60.0 + 0.0 * k_frac,
+            100.0 + 120.0 * k_frac,
+            240.0 - 180.0 * k_frac);
+
+        if (k_valid) {
+          snprintf(buf, sizeof(buf), "%.0f", k_low);
+        } else {
+          snprintf(buf, sizeof(buf), "--");
+        }
+        cv::putText(fdisp, buf, {10, 200},
+                    cv::FONT_HERSHEY_SIMPLEX, 1.6,
+                    k_valid ? k_color : cv::Scalar(120, 120, 120), 3);
+
+        // Saturation warning: pinned at k_min means no label signal left
+        if (k_valid && k_low <= k_min + 1.0) {
+          cv::putText(fdisp, "k_min", {250, 200},
+                      cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(60, 60, 240), 2);
+        }
+
+        // Bar: k_min on the left edge, k_max on the right
+        const int bar_x0 = 12, bar_x1 = fdisp_w - 12;
+        const int bar_y0 = 214, bar_y1 = 232;
+        cv::rectangle(fdisp, {bar_x0, bar_y0}, {bar_x1, bar_y1},
+                      cv::Scalar(70, 70, 70), 1);
+        if (k_valid) {
+          const int fill_w =
+              static_cast<int>(k_frac * (bar_x1 - bar_x0 - 2));
+          if (fill_w > 0) {
+            cv::rectangle(fdisp, {bar_x0 + 1, bar_y0 + 1},
+                          {bar_x0 + 1 + fill_w, bar_y1 - 1}, k_color, cv::FILLED);
+          }
+        }
+
+        snprintf(buf, sizeof(buf), "%.0f", k_min);
+        cv::putText(fdisp, buf, {bar_x0, 246},
+                    cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(130, 130, 130), 1);
+        snprintf(buf, sizeof(buf), "%.0f", k_max);
+        cv::putText(fdisp, buf, {bar_x1 - 28, 246},
+                    cv::FONT_HERSHEY_SIMPLEX, 0.35, cv::Scalar(130, 130, 130), 1);
+      }
+
       cv::imshow("Force [N]", fdisp);
     }
 
@@ -2290,6 +2414,53 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     base_pose = _poses_fb[id];
   }
 
+  // ============================================================================
+  // Step 9: Initialize Force-Adaptive Stiffness State
+  // ============================================================================
+  // Softens the arm along the contact normal as the contact force grows, and
+  // clamps the commanded setpoint so the spring force cannot exceed f_safe.
+  // Without this the setpoint winds up while the tool is blocked and the demos
+  // reach 35-40 N, which saturates the offline stiffness labels at k_min.
+
+  const bool   FAT_ENABLED   = _config.fat_enabled;
+  const double FAT_K_MAX     = _config.fat_k_max;
+  const double FAT_K_MIN     = _config.fat_k_min;
+  const double FAT_F_LOW     = _config.fat_f_low;
+  const double FAT_F_HIGH    = _config.fat_f_high;
+  const double FAT_F_SAFE    = _config.fat_f_safe;
+  const double FAT_MASS      = _config.fat_effective_mass_kg;
+  const double FAT_HYST_N    = _config.fat_contact_hysteresis_n;
+  const double FAT_HOLD_MS   = _config.fat_contact_hold_ms;
+  const double FAT_DIR_ALPHA = _config.fat_force_direction_filter_alpha;
+  const bool   FAT_SNAP      = _config.fat_snap_setpoint_on_exit;
+
+  const double FAT_DT_S = 1.0 / 1000.0;  // loop period, matches loop_timer
+  // Softening is instantaneous; stiffening is rate limited so that the full
+  // k_min -> k_max span takes k_recovery_time_s.
+  const double FAT_K_RATE_UP =
+      (FAT_K_MAX - FAT_K_MIN) / std::max(_config.fat_k_recovery_time_s, 1e-3);
+
+  bool fat_in_contact = false;
+  double fat_below_since_ms = -1.0;        // when the force first dropped out
+  Eigen::Vector3d fat_normal = Eigen::Vector3d::Zero();  // filtered contact normal
+  double fat_k_low = FAT_K_MAX;           // current stiffness along fat_normal
+  uint64_t fat_contact_events = 0;        // statistics: contact entries
+  uint64_t fat_clamp_count = 0;           // statistics: cycles the clamp fired
+
+  if (FAT_ENABLED) {
+    std::cout << header << "Force-adaptive stiffness ENABLED:" << std::endl;
+    std::cout << header << "  k: " << FAT_K_MIN << " - " << FAT_K_MAX << " N/m"
+              << std::endl;
+    std::cout << header << "  f_low/f_high/f_safe: " << FAT_F_LOW << " / "
+              << FAT_F_HIGH << " / " << FAT_F_SAFE << " N" << std::endl;
+    std::cout << header << "  max penetration at k_min: "
+              << (FAT_F_SAFE / FAT_K_MIN * 1000.0) << " mm" << std::endl;
+    std::cout << header << "  damping: D = 2*sqrt(K*m), m = " << FAT_MASS
+              << " kg" << std::endl;
+  } else {
+    std::cout << header << "Force-adaptive stiffness DISABLED (fixed yaml "
+                           "stiffness in use)" << std::endl;
+  }
 
   std::cout << header << "Teleoperation READY" << std::endl;
   std::cout << header << "Control mapping:" << std::endl;
@@ -2521,26 +2692,174 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
     }
 
     // ==========================================================================
-    // Phase 7: Schedule Waypoint Command
+    // Phase 7: Force-Adaptive Stiffness and Penetration Clamp
+    // ==========================================================================
+    // Runs on the setpoint just integrated above, before it is scheduled.
+    //  (a) a hysteretic FSM decides whether we are in contact
+    //  (b) the contact normal n is the filtered force direction (world frame)
+    //  (c) the stiffness along n follows the ACP schedule k_low(|f|)
+    //  (d) the setpoint is pulled back so |k_low * delta_n| <= f_safe
+    //  (e) K = k_max*(I - n n') + k_low*n n', with D = 2*sqrt(K*m)
+
+    if (FAT_ENABLED) {
+      RUT::Vector7d pose_fb_fat;
+      {
+        std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
+        pose_fb_fat = _poses_fb[id];
+      }
+
+      // wrench_fb_local is already world-frame (Franka O_F_ext_hat_K) and
+      // filtered twice (10 Hz franka LPF + EMA in the wrench loop).
+      Eigen::Vector3d force_world = Eigen::Vector3d::Zero();
+      if (wrench_fb_local.size() >= 3) {
+        force_world = wrench_fb_local.head<3>();
+      }
+      const double force_mag = force_world.norm();
+
+      // --- (a) contact FSM: enter fast, leave only after a hold time --------
+      const double contact_enter_n = FAT_F_LOW + FAT_HYST_N;
+      const double contact_exit_n  = std::max(0.0, FAT_F_LOW - FAT_HYST_N);
+
+      if (!fat_in_contact) {
+        if (force_mag > contact_enter_n) {
+          fat_in_contact = true;
+          fat_below_since_ms = -1.0;
+          fat_contact_events++;
+        }
+      } else {
+        if (force_mag < contact_exit_n) {
+          if (fat_below_since_ms < 0.0) {
+            fat_below_since_ms = now_ms;
+          }
+          if ((now_ms - fat_below_since_ms) >= FAT_HOLD_MS) {
+            fat_in_contact = false;
+            fat_below_since_ms = -1.0;
+            // Drop whatever setpoint offset is left over from the contact, so
+            // the next push starts from zero deflection instead of inheriting
+            // up to f_safe/k_min of accumulated travel.
+            if (FAT_SNAP) {
+              target_pose.head<3>() = pose_fb_fat.head<3>();
+            }
+          }
+        } else {
+          fat_below_since_ms = -1.0;  // force came back up, cancel the countdown
+        }
+      }
+
+      // --- (b) contact normal, frozen while out of contact ------------------
+      if (fat_in_contact && force_mag > 1e-6) {
+        const Eigen::Vector3d normal_raw = force_world / force_mag;
+        if (fat_normal.isZero()) {
+          fat_normal = normal_raw;
+        } else {
+          fat_normal = (1.0 - FAT_DIR_ALPHA) * fat_normal +
+                       FAT_DIR_ALPHA * normal_raw;
+          const double normal_norm = fat_normal.norm();
+          if (normal_norm > 1e-9) {
+            fat_normal /= normal_norm;
+          } else {
+            fat_normal = normal_raw;
+          }
+        }
+      }
+
+      // --- (c) stiffness schedule, with asymmetric rate limiting -----------
+      double k_target = FAT_K_MAX;
+      if (fat_in_contact) {
+        if (force_mag >= FAT_F_HIGH) {
+          k_target = FAT_K_MIN;
+        } else if (force_mag > FAT_F_LOW) {
+          const double s = (force_mag - FAT_F_LOW) / (FAT_F_HIGH - FAT_F_LOW);
+          k_target = FAT_K_MAX + s * (FAT_K_MIN - FAT_K_MAX);
+        }
+      }
+
+      if (k_target > fat_k_low) {
+        // stiffen gradually
+        fat_k_low = std::min(k_target, fat_k_low + FAT_K_RATE_UP * FAT_DT_S);
+      } else {
+        // soften immediately
+        fat_k_low = k_target;
+      }
+
+      const bool fat_shaping = (!fat_normal.isZero()) &&
+                               (fat_k_low < FAT_K_MAX - 1e-9);
+
+      // --- (d) penetration clamp on the integrated setpoint -----------------
+      // The sign of fat_normal is irrelevant here: the measured force opposes
+      // the penetration, so delta_n is signed, and only its magnitude is bounded.
+      if (fat_in_contact && !fat_normal.isZero()) {
+        const double delta_max = FAT_F_SAFE / std::max(fat_k_low, 1.0);
+        const Eigen::Vector3d delta =
+            target_pose.head<3>() - pose_fb_fat.head<3>();
+        const double delta_n = fat_normal.dot(delta);
+        if (std::abs(delta_n) > delta_max) {
+          const double excess =
+              delta_n - (delta_n > 0.0 ? delta_max : -delta_max);
+          target_pose.head<3>() -= excess * fat_normal;
+          fat_clamp_count++;
+        }
+      }
+
+      // --- (e) build the anisotropic compliance pair ------------------------
+      // The rotational block is left at the yaml value; only translation adapts.
+      RUT::Matrix6d stiffness_fat = _stiffnesses_high[id];
+      RUT::Matrix6d damping_fat = _dampings_high[id];
+
+      const double d_max = 2.0 * std::sqrt(FAT_K_MAX * FAT_MASS);
+      Eigen::Matrix3d k_trans = FAT_K_MAX * Eigen::Matrix3d::Identity();
+      Eigen::Matrix3d d_trans = d_max * Eigen::Matrix3d::Identity();
+
+      if (fat_shaping) {
+        // n n' is a projector, so sqrt(K) = sqrt(k_max)*(I - P) + sqrt(k_low)*P
+        // and D = 2*sqrt(m)*sqrt(K) stays exact per principal axis.
+        const Eigen::Matrix3d projector = fat_normal * fat_normal.transpose();
+        const double d_low = 2.0 * std::sqrt(fat_k_low * FAT_MASS);
+        k_trans += (fat_k_low - FAT_K_MAX) * projector;
+        d_trans += (d_low - d_max) * projector;
+      }
+
+      stiffness_fat.topLeftCorner<3, 3>() = k_trans;
+      damping_fat.topLeftCorner<3, 3>() = d_trans;
+
+      {
+        std::lock_guard<std::mutex> lock(_teleop_compliance_mtxs[id]);
+        _teleop_stiffness[id] = stiffness_fat;
+        _teleop_damping[id] = damping_fat;
+        _teleop_compliance_valid[id] = true;
+        _teleop_k_low[id] = fat_k_low;
+        _teleop_in_contact[id] = fat_in_contact;
+      }
+    }
+
+    // ==========================================================================
+    // Phase 8: Schedule Waypoint Command
     // ==========================================================================
     // Send target pose to motion planner for execution
-    
+
     set_target_pose(target_pose, 10, id);  // 10ms lookahead for smooth interpolation
 
     // ==========================================================================
-    // Phase 8: Maintain 1kHz Loop Rate
+    // Phase 9: Maintain 1kHz Loop Rate
     // ==========================================================================
-    
+
     loop_timer.sleep_till_next();
-    
+
   }  // End of teleoperation loop
 
   // ============================================================================
   // Teleoperation Loop Exit - Cleanup and Statistics
   // ============================================================================
-  
+
   // Stop any active haptic feedback
   gamepad_ptrs[id]->stop_rumble();
+
+  // Hand the compliance back to the configured fixed values
+  if (FAT_ENABLED) {
+    std::lock_guard<std::mutex> lock(_teleop_compliance_mtxs[id]);
+    _teleop_stiffness[id] = _stiffnesses_high[id];
+    _teleop_damping[id] = _dampings_high[id];
+  }
   
   std::cout << "\033[36m";  // Cyan for visibility
   std::cout << header << "═══════════════════════════════════════════════════" << std::endl;
@@ -2555,6 +2874,12 @@ void ManipServer::teleop_loop(const RUT::TimePoint& time0, int id) {
   }
   
   std::cout << header << "  Loop frequency:            1000 Hz (1ms cycle)" << std::endl;
+
+  if (FAT_ENABLED) {
+    std::cout << header << "  Contact episodes:          " << fat_contact_events << std::endl;
+    std::cout << header << "  Setpoint clamp cycles:     " << fat_clamp_count << std::endl;
+  }
+
   std::cout << header << "═══════════════════════════════════════════════════" << std::endl;
   std::cout << "\033[0m";  // Reset color
 
