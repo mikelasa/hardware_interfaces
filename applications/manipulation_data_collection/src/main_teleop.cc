@@ -100,7 +100,19 @@ int main() {
     // while _ctrl_flag_saving is still true put ~300ms+ of that transient at the end
     // of every episode's JSONs.
     server.stop_saving_data();
+    // Bounded wait. The threads normally drop their saving flags within a few
+    // ms; if one of them stalled (a camera that stops delivering frames, a
+    // Franka exception) its flag never clears, and an unbounded wait here is
+    // what froze the program at the end of an episode.
+    const double SAVE_FLUSH_TIMEOUT_MS = 5000.0;
     while (server.is_saving_data()) {
+      if (duration_timer.toc_ms() - stop_request_ms > SAVE_FLUSH_TIMEOUT_MS) {
+        std::cerr << "[main] WARNING: threads still report saving after "
+                  << (SAVE_FLUSH_TIMEOUT_MS / 1000.0)
+                  << "s. Continuing; this episode may be incomplete."
+                  << std::endl;
+        break;
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     std::cout << "[main] Episode finished with duration " << episode_duration_s

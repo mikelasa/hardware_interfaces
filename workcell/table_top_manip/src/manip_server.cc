@@ -1,6 +1,25 @@
 #include "table_top_manip/manip_server.h"
 #include "helpers.hpp"
 
+#include <cmath>
+
+namespace {
+
+// A pose7 is [x, y, z, qw, qx, qy, qz]. A waypoint that is not finite, or whose
+// quaternion is not a unit quaternion, cannot be interpolated to: the
+// interpolation controller ramps the reference straight at it and the robot
+// follows, with only the controller's own limits holding it back. Rejecting it
+// here keeps an invalid pose out of the waypoint buffers in the first place,
+// for every controller selection.
+bool is_valid_pose7(const Eigen::Ref<const Eigen::VectorXd>& pose) {
+  if (pose.size() != 7 || !pose.allFinite()) {
+    return false;
+  }
+  return std::fabs(pose.tail(4).norm() - 1.0) < 1e-3;
+}
+
+}  // namespace
+
 ManipServer::ManipServer(const std::string& config_path) {
   initialize(config_path);
 }
@@ -466,7 +485,70 @@ bool ManipServer::initialize(const std::string& config_path) {
     _dampings_low.push_back(_config.low_damping);
       
     }
+
+    else if (_config.controller_selection == ControllerSelection::POSITION_CONTROLLER)
+    {
+      // ------------------------------------------------------------------------
+      // 5c. Position Controller Setup (Pose-Based Cartesian Control)
+      // ------------------------------------------------------------------------
+      // Used with a vision-only policy, whose action is an absolute pose
+      // command to be tracked rather than a spring equilibrium.
+      // Control law: pose_cmd = bound(pose_ref); the robot's own internal
+      // controller does the tracking (on a Franka: cartesian_impedance +
+      // cartesian_position, see franka0 in the workcell config).
+
+      // create a new instance of the PositionController
+      PositionController::PositionControllerConfig position_config;
+      try {
+        deserialize(config["position_controller" + std::to_string(id)],
+                    position_config);
+      } catch (const std::exception& e) {
+        std::cerr << "Failed to load the position controller config file: "
+                  << e.what() << std::endl;
+        return false;
+      }
+
+      // same as hardware, for each controller in id_list appends a new PositionController and mutex
+      _position_controllers.emplace_back();
+      // mutex for controller, to thread safety
+      _controller_mtxs.emplace_back();
+
+      // gets the current pose of robot to use as initial pose
+      // then initializes the controller with time, config parameters and pose
+      RUT::Vector7d pose = RUT::Vector7d::Zero();
+      if (!_config.mock_hardware) {
+        robot_ptrs[id]->getCartesian(pose);
+      }
+      if (!_position_controllers[id].init(time0, position_config, pose)) {
+        std::cerr << "Failed to initialize position controller for id " << id
+                  << ". Exiting." << std::endl;
+        return false;
+      }
+
+      // Every axis is position controlled; this call only keeps the
+      // construction path uniform across the three controllers.
+      RUT::Matrix6d Tr = RUT::Matrix6d::Identity();
+      int n_af = 0;
+      _position_controllers[id].setForceControlledAxis(Tr, n_af);
+
+      // This controller has no stiffness/damping of its own -- the force
+      // ceiling comes from its tracking leash against the robot's internal
+      // stiffness. The high/low vectors are still pushed so that the
+      // set_high_level_* calls and _config.low_damping indexing stay valid
+      // for every controller selection.
+      _stiffnesses_high.push_back(RUT::Matrix6d::Zero());
+      _stiffnesses_low.push_back(RUT::Matrix6d::Zero());
+      _dampings_high.push_back(RUT::Matrix6d::Zero());
+      _dampings_low.push_back(_config.low_damping);
+    }
   }
+
+  // Say which controller actually got selected. string_to_enum<ControllerSelection>
+  // falls back to IMPEDANCE_CONTROLLER on an unrecognised string rather than
+  // failing, so a typo in the yaml would otherwise run the wrong controller
+  // silently -- and the three differ in how they treat contact.
+  std::cout << "[ManipServer] controller_selection: "
+            << to_string(_config.controller_selection) << std::endl;
 
   // ============================================================================
   // Step 6: Initialize Teleoperation Devices
@@ -683,7 +765,7 @@ bool ManipServer::initialize(const std::string& config_path) {
   for (int id : _camera_id_list) {
     (void)id;
     _states_rgb_thread_ready.push_back(false);
-    _states_rgb_thread_saving.push_back(false);
+    _states_rgb_thread_saving.emplace_back(false);
     _states_rgb_seq_id.push_back(0);
   }
   for (int id : _id_list) {
@@ -691,9 +773,9 @@ bool ManipServer::initialize(const std::string& config_path) {
     _states_robot_thread_ready.push_back(false);
     _states_eoat_thread_ready.push_back(false);
     _states_wrench_thread_ready.push_back(false);
-    _states_robot_thread_saving.push_back(false);
-    _states_eoat_thread_saving.push_back(false);
-    _states_wrench_thread_saving.push_back(false);
+    _states_robot_thread_saving.emplace_back(false);
+    _states_eoat_thread_saving.emplace_back(false);
+    _states_wrench_thread_saving.emplace_back(false);
     _states_robot_seq_id.push_back(0);
     _states_eoat_seq_id.push_back(0);
     _states_wrench_seq_id.push_back(0);
@@ -807,6 +889,9 @@ bool ManipServer::initialize(const std::string& config_path) {
       } else if (_config.controller_selection == ControllerSelection::IMPEDANCE_CONTROLLER) {
         _robot_threads.emplace_back(&ManipServer::robot_impedance_loop, this,
                                     std::ref(time0), id);
+      } else if (_config.controller_selection == ControllerSelection::POSITION_CONTROLLER) {
+        _robot_threads.emplace_back(&ManipServer::robot_position_loop, this,
+                                    std::ref(time0), id);
       }
       // Start logging thread for each robot (handles file I/O separately)
       _robot_threads.emplace_back(&ManipServer::robot_logging_loop, this,
@@ -881,13 +966,6 @@ bool ManipServer::initialize(const std::string& config_path) {
   
   std::cout << "[ManipServer] All threads are ready." << std::endl;
 
-  if (_config.wrench_bias_filter_enabled) {
-    if (!_wrench_bias_corrector.load(_config.wrench_bias_filter_model_path)) {
-      std::cerr << "[ManipServer] WARNING: wrench_bias_filter enabled but model "
-                   "failed to load — correction disabled.\n";
-    }
-  }
-
   std::cout << "[ManipServer] Done initialization." << std::endl;
   return true;
 }
@@ -952,7 +1030,10 @@ void ManipServer::join_threads() {
       }
     }
   }
-  if (_config.plot_rgb) {
+  // Must mirror the launch condition in initialize(): the thread is started
+  // for either window, so joining it only for plot_rgb left a joinable thread
+  // for ~ManipServer to destroy (std::terminate) when only plot_wrench was on.
+  if (_config.plot_rgb || _config.plot_wrench) {
     std::cout << "[ManipServer]: Waiting for plotting thread to join."
               << std::endl;
     if (_rgb_plot_thread.joinable()) _rgb_plot_thread.join();
@@ -1087,13 +1168,56 @@ void ManipServer::set_high_level_maintain_position() {
   // clear existing targets
   clear_cmd_buffer();
 
-  RUT::Vector7d pose_fb;
   for (int id : _id_list) {
-    // get the current pose as the only new target
-    if (!_config.mock_hardware) {
-      robot_ptrs[id]->getCartesian(
-          pose_fb);  // use the current pose as the reference
+    // Use the pose the robot thread publishes, NOT robot_ptrs[id]->getCartesian().
+    //
+    // getCartesian() calls readOnce() on the Franka and writes the shared
+    // robot_state, which races with the 1kHz control loop that initialize()
+    // has already started -- and its return value used to be ignored, so a
+    // failed or torn read left `pose_fb` uninitialized and that garbage became
+    // the maintain-position target, 200ms and 1000ms in the future. Under
+    // POSITION_CONTROLLER that is a tracked command: the reference ramped from
+    // the real pose toward the base origin and the leash dragged the arm after
+    // it. _poses_fb[id] is written every cycle by the control loop itself,
+    // from its own cached-state read, so it is always a live, valid pose.
+    RUT::Vector7d pose_fb;
+    bool pose_ok = false;
+
+    if (_config.mock_hardware) {
+      // The robot loops publish _poses_fb only on real hardware, so mirror
+      // the identity-with-offset pose they seed their own feedback with.
+      pose_fb << id, 0, 0, 1, 0, 0, 0;
+      pose_ok = true;
     }
+
+    for (int attempt = 0; attempt < 100 && !pose_ok; attempt++) {
+      {
+        std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
+        if (_poses_fb[id].size() == 7) {
+          pose_fb = _poses_fb[id];
+          pose_ok = is_valid_pose7(pose_fb);
+        }
+      }
+      if (!pose_ok) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+    }
+
+    if (!pose_ok) {
+      // Schedule nothing. The robot thread initialized its interpolation
+      // controller with the pose it read at startup and holds that pose while
+      // the waypoint buffer is empty, so the robot still maintains position --
+      // it just cannot be re-seeded from here.
+      std::cerr << "[ManipServer][set_high_level_maintain_position] no valid "
+                   "feedback pose for robot "
+                << id
+                << " after 1s. Scheduling no waypoint; the robot holds the "
+                   "pose its control loop started from."
+                << std::endl;
+      continue;
+    }
+
+    // get the current pose as the only new target
     set_target_pose(pose_fb, 200, id);
     set_target_pose(pose_fb, 1000, id);
   }
@@ -1109,6 +1233,11 @@ void ManipServer::set_high_level_maintain_position() {
     } else if (_config.controller_selection == ControllerSelection::IMPEDANCE_CONTROLLER) {
       _impedance_controllers[id].setStiffnessMatrix(_stiffnesses_high[id]);
       _impedance_controllers[id].setDampingMatrix(_dampings_high[id]);
+    } else if (_config.controller_selection == ControllerSelection::POSITION_CONTROLLER) {
+      // No stiffness to raise. The waypoints set above already target the
+      // current pose, and reset() re-seeds the command from live feedback so
+      // the controller holds exactly where the robot is.
+      _position_controllers[id].reset();
     }
   }
 }
@@ -1126,12 +1255,27 @@ void ManipServer::set_high_level_free_jogging() {
     } else if (_config.controller_selection == ControllerSelection::IMPEDANCE_CONTROLLER) {
       _impedance_controllers[id].setStiffnessMatrix(_stiffnesses_low[id]);
       _impedance_controllers[id].setDampingMatrix(_dampings_low[id]);
+    } else if (_config.controller_selection == ControllerSelection::POSITION_CONTROLLER) {
+      // There is no compliant mode to drop into: a position controller cannot
+      // be made backdrivable by zeroing a gain it does not own. Hand-guiding
+      // under this selection needs the robot's own free-motion mode.
+      std::cerr << "[ManipServer] set_high_level_free_jogging() has no effect "
+                   "under POSITION_CONTROLLER: this controller has no "
+                   "compliance to relax. Select IMPEDANCE_CONTROLLER or "
+                   "ADMITTANCE_CONTROLLER for hand guiding."
+                << std::endl;
     }
   }
 }
 
 void ManipServer::set_target_pose(const Eigen::Ref<RUT::Vector7d> pose,
                                   double dt_in_future_ms, int robot_id) {
+  if (!is_valid_pose7(pose)) {
+    std::cerr << "[ManipServer][set_target_pose] refusing a target that is not "
+                 "a finite unit-quaternion pose7: "
+              << pose.transpose() << std::endl;
+    return;
+  }
   std::lock_guard<std::mutex> lock(_waypoints_buffer_mtxs[robot_id]);
   _waypoints_buffers[robot_id].put(pose);
   _waypoints_timestamp_ms_buffers[robot_id].put(
@@ -1145,6 +1289,8 @@ void ManipServer::set_force_controlled_axis(const RUT::Matrix6d& Tr, int n_af,
     _admittance_controllers[robot_id].setForceControlledAxis(Tr, n_af);
   } else if (_config.controller_selection == ControllerSelection::IMPEDANCE_CONTROLLER) {
     _impedance_controllers[robot_id].setForceControlledAxis(Tr, n_af);
+  } else if (_config.controller_selection == ControllerSelection::POSITION_CONTROLLER) {
+    _position_controllers[robot_id].setForceControlledAxis(Tr, n_af);
   }
 }
 
@@ -1155,6 +1301,16 @@ void ManipServer::set_stiffness_matrix(const RUT::Matrix6d& stiffness,
     _admittance_controllers[robot_id].setStiffnessMatrix(stiffness);
   } else if (_config.controller_selection == ControllerSelection::IMPEDANCE_CONTROLLER) {
     _impedance_controllers[robot_id].setStiffnessMatrix(stiffness);
+  } else if (_config.controller_selection == ControllerSelection::POSITION_CONTROLLER) {
+    // Deliberately ignored. A position controller has no stiffness of its own;
+    // the robot's internal controller supplies it (franka0.setCartesianImpedance)
+    // and that is set once, before the motion starts. Silently accepting this
+    // would let a caller believe it had changed the compliance.
+    std::cerr << "[ManipServer] set_stiffness_matrix() ignored under "
+                 "POSITION_CONTROLLER. Stiffness comes from the robot's "
+                 "internal controller; bound contact force with the "
+                 "position_controller tracking leash instead."
+              << std::endl;
   }
 }
 
@@ -1244,6 +1400,17 @@ void ManipServer::schedule_waypoints(const Eigen::MatrixXd& waypoints,
                  "number of columns. Exiting."
               << std::endl;
     return;
+  }
+  // Every waypoint must be a finite unit-quaternion pose7. A single bad column
+  // becomes an interpolation target and the robot is driven to it, so reject
+  // the whole schedule rather than execute part of it.
+  for (int i = 0; i < waypoints.cols(); i++) {
+    if (!is_valid_pose7(waypoints.col(i))) {
+      std::cerr << "[ManipServer][schedule_waypoints] waypoint " << i
+                << " is not a finite unit-quaternion pose7: "
+                << waypoints.col(i).transpose() << ". Exiting." << std::endl;
+      return;
+    }
   }
 
 #ifdef DEBUG_WP_SCHEDULING
@@ -1546,13 +1713,28 @@ void ManipServer::stop_saving_data() {
 }
 
 bool ManipServer::is_saving_data() {
+  // Once the threads are shutting down nothing can still be saving. Each loop
+  // clears its own flag on the way out, but a thread that died or stalled
+  // before getting there would otherwise keep the caller polling forever.
+  {
+    std::lock_guard<std::mutex> lock(_ctrl_mtx);
+    if (!_ctrl_flag_running) {
+      return false;
+    }
+  }
+
   bool is_saving = false;
   for (int id : _camera_id_list) {
-    is_saving = is_saving || _states_rgb_thread_saving[id];
+    is_saving = is_saving || _states_rgb_thread_saving[id].load();
   }
   for (int id : _id_list) {
-    is_saving = is_saving || _states_robot_thread_saving[id] ||
-                _states_wrench_thread_saving[id];
+    is_saving = is_saving || _states_robot_thread_saving[id].load() ||
+                _states_wrench_thread_saving[id].load();
+    // The gripper writes its own JSON too, so the episode is not on disk
+    // until eoat_loop has closed it either.
+    if (_config.run_eoat_thread) {
+      is_saving = is_saving || _states_eoat_thread_saving[id].load();
+    }
   }
   return is_saving;
 }

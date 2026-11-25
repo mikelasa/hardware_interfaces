@@ -1,0 +1,242 @@
+# Hardware config for the vision-only Diffusion Policy inference runner.
+#
+# 2026-11-16: DP NOW RUNS ON ACP'S IMPEDANCE_CONTROLLER (torque control, same
+# franka0 modes as single_arm_data_collection_franka.yaml). inference_DP.py
+# schedules a constant stiffness, diag(1300,1300,1300, 400,400,400) -- the
+# stiff-axis values ACP's runner uses -- with every chunk, so DP and ACP share
+# one controller and one set of gains; ACP only differs by softening one axis
+# and shifting its virtual target. The POSITION_CONTROLLER path below was
+# dropped: its tracking leash (max_pose_error_m) moved the command with the
+# measured pose, which cancelled the damping of Franka's internal Cartesian
+# impedance. Once the robot fell >20 mm behind it went into a self-sustained
+# ~1 Hz swing of up to 6 cm at ~0.24 m/s that ignored the command (it kept
+# going after Ctrl+C with the command held still, and hid slow_down_factor).
+# To go back: restore the three lines marked "was" below.
+#
+# ORIGINAL NOTE (position-controller design, kept for reference):
+#
+# Derived from single_arm_data_collection_franka.yaml. Differences, all of them
+# consequences of using POSITION_CONTROLLER instead of IMPEDANCE_CONTROLLER:
+#
+#   controller_selection      IMPEDANCE_CONTROLLER -> POSITION_CONTROLLER
+#   franka0.controller_mode   external_controller  -> cartesian_impedance
+#   franka0.motion_generator  joint_velocity       -> cartesian_position
+#   + position_controller0    the new controller's parameter block
+#   - teleop device blocks    gamepad/spacemouse/gello, unreachable at teleop: False
+#   - force_adaptive_teleop   reduced to the disable flag; it is a teleop layer
+#
+# WHY A SEPARATE FILE: franka0.controller_mode and motion_generator_mode are
+# consumed once, by startMotion() inside FRANKA::Implementation::initialize(),
+# and libfranka has no stopMotion here -- so the controller cannot be switched
+# inside a running process. Selection is therefore per-run, by pointing the
+# runner at this file instead of the data-collection one. ACP keeps using
+# single_arm_data_collection_franka.yaml and is unaffected.
+#
+# Vision-only DP emits an absolute pose command meant to be TRACKED. Under the
+# impedance controller that command is a spring equilibrium instead, so in
+# contact the robot settles f/K away from it -- 25 mm at K=800 N/m and 20 N.
+# That is the whole reason this config exists.
+data_folder: "/home/robotlab/data/real/DP_inference"  # folder to save data
+mock_hardware: false
+bimanual: false
+num_cameras: 2
+
+run_robot_thread: True
+run_wrench_thread: True
+run_rgb_thread: True
+run_eoat_thread: false
+eoat_selection: "FRANKA_GRIPPER" # "FRANKA_GRIPPER" or "EOAT"
+teleop: False
+plot_rgb: False
+plot_wrench: False
+
+rgb_buffer_size: 11
+robot_buffer_size: 1200 #duplicado ya que los datos se leen el doble de rapido.
+wrench_buffer_size: 1200 # reducido porquu la velocidad es de 1Khz 
+eoat_buffer_size: 600
+robot_selection: "FRANKA"  # "UR_RTDE" or "FRANKA"
+camera_selection: ["GOPRO", "REALSENSE"] #["GOPRO", "REALSENSE", "USBCAM"]
+force_sensing_mode: "JOINT_SENSORS"
+controller_selection: "IMPEDANCE_CONTROLLER"  # was POSITION_CONTROLLER; see the note at the top
+teleop_device: "NONE"  # inference runs no teleop device
+low_damping: [2.0, 2.0, 2.0, 0.1, 0.1, 0.1]
+output_rgb_hw: [224, 224]
+
+# inner joint sensor frequency (cant be changed for now because buffer synchronization)
+joint_sensor_frequency: 1000
+wrench_sensor_filter_alpha: 0.05  # Pre-filter on raw joint-sensor wrench (lower=smoother, higher=faster response)
+
+# Force-adaptive stiffness for teleoperation.
+# Makes the demonstrated stiffness vary with contact force, so the offline
+# stiffness labels (postprocess_add_virtual_target_label.py) carry real signal
+# instead of pinning at k_min. Only the translational 3x3 block is adapted;
+# Force-adaptive stiffness is a teleoperation layer and does not apply to
+# inference. Under POSITION_CONTROLLER it could not act anyway: it drives
+# stiffness and damping, neither of which this controller owns.
+force_adaptive_teleop:
+  enabled: False
+
+franka0:
+  robot_ip: "172.17.6.164"
+  log_size: 50
+  tcp_mass: 0.0 #0.3
+  fx_c_load: [0.0, 0.0, 0.0]
+  tcp_inertia: [0.00001, 0.0, 0.0,
+                0.0, 0.00001, 0.0,
+                0.0, 0.0, 0.00001]
+  deviation: [10.0, 3.12, 6.283185307179586]
+  kDeltaT: 1e-3
+  CutoffFrequency: 100
+  realtime_config: "enforce" # ignore or enforce
+  controller_mode: "external_controller" # was cartesian_impedance. "joint_impedance" or "cartesian_impedance" or "external_controller"
+  motion_generator_mode: "joint_velocity" # was cartesian_position. "joint_position" or "joint_velocity" or "cartesian_position" or "cartesian_velocity"
+  setJointImpedance: [3000, 3000, 3000, 2500, 2500, 2000, 2000]
+  setCartesianImpedance: [1000, 1000, 1000, 200, 200, 200]
+  kMaxTranslationalVelocity: 0.25
+  kMaxTranslationalAcceleration: 1.0
+  kMaxTranslationalJerk: 500
+  kMaxRotationalVelocity: 0.25
+  kMaxRotationalAcceleration: 1.0
+  kMaxRotationalJerk: 500
+  robot_interface_config:
+    zone_safety_mode: "SAFETY_MODE_TRUNCATE"
+    incre_safety_mode: "SAFETY_MODE_STOP"
+    operation_mode: "OPERATION_MODE_CARTESIAN"
+    max_incre_m: 0.03
+    max_incre_rad: 0.2
+    max_incre_joint_rad: 0.0628
+    safe_zone: [-0.5, 0.7, -0.9, -0.2, 0.2, 0.8]
+
+gripper_open_preset:
+  width: 0.08       # m — fully open
+  force: 0.0        # N — 0 means move(), not grasp()
+  duration_ms: 800  # ms to reach target
+
+gripper_close_preset:
+  width: 0.0        # m — fully closed
+  force: 20.0       # N — triggers grasp() in FrankaGripper
+  duration_ms: 1200 # ms to reach target
+
+franka_gripper0:
+  robot_ip: "172.17.6.164"       # same IP as the arm
+  move_speed: 0.1                # m/s
+  grasp_speed: 0.05              # m/s — slower for grasping
+  grasp_epsilon_inner: 0.005     # m
+  grasp_epsilon_outer: 0.005     # m
+  position_threshold: 0.001      # m — min change to issue a new command
+  force_threshold: 0.5           # N — above this uses grasp() instead of move()
+  js_interface_config:
+    num_joints: 1
+    range_safety_mode: "SAFETY_MODE_TRUNCATE"
+    incre_safety_mode: "SAFETY_MODE_NONE"
+    max_incre: 0.08
+    safe_zone: [0.0, 0.08]       # gripper width range in meters
+
+realsense0: # Intel Realsense D405 -- wrist
+  # camera_selection[0] is the wrist camera, the one that changes between
+  # experiments (REALSENSE / USBCAM / GOPRO); camera_selection[1] is always the
+  # external D415. Hence the two realsense blocks: realsense0 is read only when
+  # the wrist camera is a RealSense.
+  # Serials come from `rs-enumerate-devices -s`. Required with more than one
+  # camera: a pipeline with no serial takes the first connected device, so the
+  # second one fails with xioctl(VIDIOC_S_FMT) errno=16 Device or resource busy.
+  serial_number: "218622278970"
+  width: 848
+  height: 480
+  framerate: 30
+  enable_color: true
+  enable_depth: false
+  align_depth_to_color: false
+
+# Kept, though POSITION_CONTROLLER does not read it, so this file can be
+# flipped back to IMPEDANCE_CONTROLLER for an A/B without re-deriving it.
+impedance_controller0:
+  dt: 0.001
+  log_to_file: true
+  log_file_path: "/home/robotlab/data/controller_log/impedance_controller.log"
+  alert_overrun: false
+  compliance6d:
+    #stiffness: [1500, 1500, 1500, 100, 100, 100] # 
+    #damping: [46.9, 46.9, 46.9, 10, 10 ,10] # applying critical damping: D = 2*sqrt(K*m)
+    stiffness: [800, 800, 800, 50, 50, 50] # 
+    damping: [34, 34, 34, 8.56, 8.56 , 8.56] # applying critical damping: D = 2*sqrt(K*m)
+    #stiffness: [500, 500, 500, 50, 50, 50] # 
+    #damping: [27, 27, 27, 5, 5 ,5]
+    nullspace_stiffness: [0, 0, 0, 0, 0, 0, 0]
+    nullspace_damping: [0, 0, 0, 0, 0, 0, 0]
+    stiction: [0, 0, 0, 0, 0, 0] #stationary friction model
+
+# (spacemouse0 block omitted: teleop device, unreachable at teleop: False)
+usbcam0:
+  device_name: "/dev/video7"
+  frame_width: 640
+  frame_height: 480
+  crop_rows: [-1, -1]
+  crop_cols: [-1, -1]
+  fps: 30
+  manual_exposure: true
+  exposure_absolute: 200  # 100 x 100us = 10ms = 1/100s (fits in 16.7ms frame, one 50Hz half-cycle)
+  cv_num_threads: 8
+
+realsense1: # Intel Realsense D415 -- external, the fixed camera_selection[1]
+  serial_number: "314522063792"
+  width: 848
+  height: 480
+  framerate: 30
+  enable_color: true
+  enable_depth: false
+  align_depth_to_color: false
+
+gopro0:
+  #device_name: "/dev/video0"
+  device_name: "/dev/v4l/by-id/usb-Elgato_Cam_Link_4K_A29YB55031069F-video-index0"
+  # device_name: "/dev/v4l/by-id/usb-Elgato_Elgato_HD60_X_A00XB320216MTR-video-index0" # right arm
+  frame_width: 1920
+  frame_height: 1080
+  crop_rows: [0, 1080] # set to negative to disable cropping
+  crop_cols: [420, 1500]
+  fps: 30
+  cv_num_threads: 8
+
+# (gello_teleop block omitted: teleop device, unreachable at teleop: False)
+
+# Parameters for POSITION_CONTROLLER (force_control_impedance/position_controller.h).
+#
+# This controller owns no stiffness. It emits a bounded pose command and
+# Franka's internal Cartesian impedance -- franka0.setCartesianImpedance above
+# -- does the tracking. Contact force is therefore bounded by the tracking
+# leash acting against that internal stiffness:
+#
+#     |f|   <= setCartesianImpedance[0:3] * max_pose_error_m
+#     |tau| <= setCartesianImpedance[3:6] * max_pose_error_rad
+#
+# With setCartesianImpedance [1000, 1000, 1000, 200, 200, 200]:
+#     0.020 m   -> 20 N    equal to the flip-up f_safe that the demonstrations
+#                          were recorded under (force_adaptive_teleop.f_safe)
+#     0.050 rad -> 10 Nm   under Franka's 25 Nm nominal collision threshold
+#
+# Any limit is disabled by setting it to 0, which turns the controller into a
+# plain pass-through of the interpolated reference.
+#
+# These are starting values derived from the arithmetic above, NOT from a
+# hardware tuning pass. Watch the clamp flags in the controller log on a slow
+# first rollout before trusting them.
+position_controller0:
+  dt: 0.001
+  log_to_file: true
+  log_file_path: "/home/robotlab/data/controller_log/position_controller.log"
+  alert_overrun: false
+  tracking:
+    # Per-cycle change of the command at 1 kHz. 0.00025 m/cycle is 0.25 m/s,
+    # which is exactly franka0.kMaxTranslationalVelocity -- so this limit and
+    # the rate limiter inside FRANKA::setCartesian() agree rather than fight.
+    # Its job is to turn a policy replanning discontinuity into a ramp.
+    max_translation_step_m: 0.00025
+    max_rotation_step_rad: 0.00025   # 0.25 rad/s = franka0.kMaxRotationalVelocity
+    # The tracking leash. This is the force ceiling; see the arithmetic above.
+    # It also stops the command walking away from the robot when motion is
+    # blocked, which a controller with no integral term would otherwise do.
+    max_pose_error_m: 0.02
+    max_pose_error_rad: 0.05
+    # Off: FRANKA::setCartesian() already low-passes at franka0.CutoffFrequency.
+    lowpass_cutoff_hz: 0.0

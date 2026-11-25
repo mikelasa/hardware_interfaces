@@ -20,10 +20,11 @@
 #include <force_control_impedance/config_deserialize.h>
 #include <force_control_impedance/impedance_controller.h>
 #include <force_control_impedance/config_deserialize_impedance.h>
+#include <force_control_impedance/position_controller.h>
+#include <force_control_impedance/config_deserialize_position.h>
 #include <hardware_interfaces/js_interfaces.h>
 #include <hardware_interfaces/robot_interfaces.h>
 #include <hardware_interfaces/types.h>
-#include "wrench_bias_corrector.h"
 // hardware used in this app
 #include <ati_netft/ati_netft.h>
 #include <coinft/coin_ft.h>
@@ -98,9 +99,6 @@ struct ManipServerConfig {
   GripperPreset gripper_open_preset{};
   GripperPreset gripper_close_preset{};
 
-  bool wrench_bias_filter_enabled{false};
-  std::string wrench_bias_filter_model_path{""};
-
   // force-adaptive stiffness during teleoperation (see force_adaptive_teleop
   // in the yaml). Adapts only the translational block of the impedance
   // stiffness/damping, as a function of the measured contact force.
@@ -164,13 +162,6 @@ struct ManipServerConfig {
         gripper_open_preset.deserialize(node["gripper_open_preset"]);
       if (node["gripper_close_preset"])
         gripper_close_preset.deserialize(node["gripper_close_preset"]);
-      if (node["wrench_bias_filter"]) {
-        const auto& wbf = node["wrench_bias_filter"];
-        if (wbf["enabled"])
-          wrench_bias_filter_enabled = wbf["enabled"].as<bool>();
-        if (wbf["model_path"])
-          wrench_bias_filter_model_path = wbf["model_path"].as<std::string>();
-      }
       if (node["force_adaptive_teleop"]) {
         const auto& fat = node["force_adaptive_teleop"];
         if (fat["enabled"]) fat_enabled = fat["enabled"].as<bool>();
@@ -251,6 +242,13 @@ class ManipServer {
   bool is_ready();  // check if all buffers are full
   bool is_running();
   bool is_bimanual() { return _config.bimanual; }
+  /// @brief Which controller this server was configured with, as the same
+  /// string the yaml uses. Lets the Python side skip calls that are
+  /// meaningless for the active controller (e.g. stiffness under
+  /// POSITION_CONTROLLER) instead of relying on a warning.
+  std::string get_controller_selection() {
+    return to_string(_config.controller_selection);
+  }
 
   // getters: get the most recent k data points in the buffer
   const Eigen::MatrixXd get_camera_rgb(int k, int camera_id = 0);
@@ -303,9 +301,6 @@ class ManipServer {
  private:
   // config
   ManipServerConfig _config;
-
-  // wrench bias correction MLP (optional, loaded when wrench_bias_filter.enabled)
-  WrenchBiasCorrector _wrench_bias_corrector{};
 
   // additional configs as local variables
   std::vector<RUT::Matrix6d> _stiffnesses_high{};
@@ -390,6 +385,7 @@ class ManipServer {
   // controllers
   std::vector<AdmittanceController> _admittance_controllers;
   std::vector<ImpedanceController> _impedance_controllers;
+  std::vector<PositionController> _position_controllers;
   std::deque<std::mutex> _controller_mtxs;
 
   // threads
@@ -424,10 +420,14 @@ class ManipServer {
   std::vector<bool> _states_wrench_thread_ready{};
   bool _state_plot_thread_ready{false};
 
-  std::vector<bool> _states_robot_thread_saving{};
-  std::vector<bool> _states_eoat_thread_saving{};
-  std::vector<bool> _states_rgb_thread_saving{};
-  std::vector<bool> _states_wrench_thread_saving{};
+  // Written by each worker thread, polled by is_saving_data() from the main
+  // thread. std::vector<bool> is bit-packed, so two threads writing different
+  // indices were read-modify-writing the same word: one could resurrect the
+  // other's cleared flag. Atomics, as _logging_buffer_overflow already does.
+  std::deque<std::atomic<bool>> _states_robot_thread_saving{};
+  std::deque<std::atomic<bool>> _states_eoat_thread_saving{};
+  std::deque<std::atomic<bool>> _states_rgb_thread_saving{};
+  std::deque<std::atomic<bool>> _states_wrench_thread_saving{};
 
   std::vector<int> _states_robot_seq_id{};
   std::vector<int> _states_eoat_seq_id{};
@@ -463,6 +463,7 @@ class ManipServer {
   // loop functions
   void robot_admittance_loop(const RUT::TimePoint& time0, int robot_id);
   void robot_impedance_loop(const RUT::TimePoint& time0, int robot_id);
+  void robot_position_loop(const RUT::TimePoint& time0, int robot_id);
   void robot_logging_loop(const RUT::TimePoint& time0, int robot_id);
   void eoat_loop(const RUT::TimePoint& time0, int robot_id);
   void teleop_loop(const RUT::TimePoint& time0, int robot_id);

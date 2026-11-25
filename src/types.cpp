@@ -47,7 +47,8 @@ const std::vector<EoatSelection>& all_eoat_selections() {
 const std::vector<ControllerSelection>& all_controller_selections() {
   static const std::vector<ControllerSelection> modes = {
       ControllerSelection::IMPEDANCE_CONTROLLER,
-      ControllerSelection::ADMITTANCE_CONTROLLER};
+      ControllerSelection::ADMITTANCE_CONTROLLER,
+      ControllerSelection::POSITION_CONTROLLER};
   return modes;
 }
 
@@ -162,6 +163,8 @@ const char* to_string(const ControllerSelection e) {
       return "IMPEDANCE_CONTROLLER";
     case ControllerSelection::ADMITTANCE_CONTROLLER:
       return "ADMITTANCE_CONTROLLER";
+    case ControllerSelection::POSITION_CONTROLLER:
+      return "POSITION_CONTROLLER";
     default:
       return "INVALID_CONTROLLER_SELECTION";
   }

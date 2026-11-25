@@ -175,13 +175,6 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
       franka_ptr->getCurrentPose(pose_fb);
       franka_ptr->getCurrentWrenchTool(wrench_fb_ur);
       state = franka_ptr->getRobotState();
-      if (_config.wrench_bias_filter_enabled && _wrench_bias_corrector.is_loaded()) {
-        Eigen::Matrix<double, 7, 1> q =
-            Eigen::Map<const Eigen::Matrix<double, 7, 1>>(state.q.data());
-        Eigen::Matrix<double, 7, 1> tau_J =
-            Eigen::Map<const Eigen::Matrix<double, 7, 1>>(state.tau_J.data());
-        wrench_fb_ur -= _wrench_bias_corrector.predict(q, tau_J);
-      }
       
       // Recompute Jacobian for current configuration
       std::array<double, 42> jacobian_array = 
@@ -401,7 +394,6 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
         }
         
         _logging_buffers[id].put(log_data);
-        _states_robot_thread_saving[id] = true;
         _logging_buffer_overflow[id].store(false);
         
       } else {
@@ -413,9 +405,11 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
           std::cerr << "\033[0m";
         }
       }
-    } else {
-      _states_robot_thread_saving[id] = false;
     }
+    // The saving flag belongs to robot_logging_loop, the thread that opens,
+    // writes and closes the JSON streams. Clearing it here (1kHz, so ~1ms
+    // after stop_saving_data()) let main return from its is_saving_data()
+    // wait while the logging thread was still flushing the episode.
     
     loop_profiler.stop("logging");
 
@@ -516,6 +510,466 @@ void ManipServer::robot_impedance_loop(const RUT::TimePoint& time0, int id) {
     _ctrl_flag_running = false;
   }
   
+  std::cout << header << "Thread terminated." << std::endl;
+}
+
+// =============================================================================
+// ROBOT POSITION CONTROL LOOP - FRANKA (CARTESIAN POSITION INTERFACE)
+// =============================================================================
+//
+// Purpose: Real-time Cartesian pose tracking for Franka robots
+//          Runs at 1kHz to match Franka's control rate
+//
+// Control Architecture:
+//   1. Read robot state (pose, wrench) from Franka
+//   2. Query waypoint buffer for target trajectory
+//   3. Interpolate smooth reference trajectory
+//   4. Bound the reference (rate limit + leash) in PositionController
+//   5. Stream the pose command via setCartesian()
+//   6. Log data to circular buffers for the logging thread
+//
+// Key Difference from Impedance Control:
+//   - Impedance: computes joint torques itself; the commanded pose is a spring
+//     equilibrium, so in contact the robot settles f/K away from it.
+//   - Position:  emits a pose command and lets Franka's own internal
+//     controller track it (franka0.controller_mode: cartesian_impedance,
+//     motion_generator_mode: cartesian_position). Contact force is bounded by
+//     the controller's tracking leash against that internal stiffness, not by
+//     a stiffness this loop schedules.
+//
+// This loop exists for vision-only policies, whose action is an absolute pose
+// command meant to be tracked rather than hung off a spring.
+//
+// Real-Time Constraints:
+//   - MUST complete within 1ms (1kHz control rate)
+//   - setCartesian() is the blocking sync point with the robot, exactly as
+//     setTorques() is in the impedance loop
+//
+// =============================================================================
+
+void ManipServer::robot_position_loop(const RUT::TimePoint& time0, int id) {
+  std::string header =
+      "[ManipServer][Robot Position thread] " + std::to_string(id) + ": ";
+  std::cout << header + "starting thread.\n";
+
+  // ============================================================================
+  // Step 1: Set Real-Time Thread Priority
+  // ============================================================================
+  // Critical for meeting Franka's 1kHz timing requirements
+
+  if (!_config.mock_hardware) {
+    struct sched_param param;
+    param.sched_priority = 99;
+    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) != 0) {
+      std::cerr << header << " Failed to set real-time priority: "
+                << strerror(errno) << std::endl;
+      std::cerr << header << "   Try: sudo setcap cap_sys_nice=eip <executable>"
+                << std::endl;
+    } else {
+      std::cout << header
+                << " Real-time priority (SCHED_FIFO, priority 99) set successfully"
+                << std::endl;
+    }
+  }
+
+  // ============================================================================
+  // Step 2: Initialize Control Variables
+  // ============================================================================
+
+  // Synchronized timer for consistent timestamps across all threads
+  RUT::Timer timer;
+  timer.tic(time0);
+
+  // State feedback variables
+  RUT::Vector7d pose_fb;               // Current end-effector pose
+  RUT::Vector6d wrench_fb_ur;          // Force/torque at end-effector
+  RUT::Vector6d wrench_WTr;            // Reference wrench (unused here)
+
+  // Control command variables
+  RUT::Vector7d pose_target_waypoint;  // Next waypoint from buffer
+  RUT::Vector7d ref_pose;              // Interpolated reference pose
+  RUT::Vector7d pose_robot_cmd;        // Bounded pose command to send
+
+  // Initialize with safe defaults for mock hardware
+  pose_fb << id, 0, 0, 1, 0, 0, 0;     // Identity pose with offset
+  pose_robot_cmd = pose_fb;
+  wrench_fb_ur = RUT::Vector6d::Zero();
+  wrench_WTr = RUT::Vector6d::Zero();
+
+  // ============================================================================
+  // Step 3: Initialize Robot Interface and Dynamics Model
+  // ============================================================================
+
+  FRANKA* franka_ptr = nullptr;
+  franka::RobotState state;
+
+  if (!_config.mock_hardware) {
+    franka_ptr = static_cast<FRANKA*>(robot_ptrs[id].get());
+    franka_ptr->getCartesian(pose_fb);
+    pose_robot_cmd = pose_fb;
+
+    state = franka_ptr->getRobotState();
+
+    std::cout << header << "Initial pose: " << pose_fb.transpose() << std::endl;
+  }
+
+  // This controller needs no Jacobian, but gello_teleop_loop reads the shared
+  // model through _franka_model_ready, so publish it as the impedance loop does.
+  std::unique_ptr<franka::Model> model_ptr;
+  if (!_config.mock_hardware) {
+    model_ptr = std::make_unique<franka::Model>(franka_ptr->loadModel());
+    {
+      std::lock_guard<std::mutex> lock(_franka_model_mtxs[id]);
+      _franka_models[id] =
+          std::shared_ptr<franka::Model>(model_ptr.get(), [](franka::Model*) {});
+      franka::RobotState rs0 = franka_ptr->getRobotState();
+      _franka_F_T_EE[id] = rs0.F_T_EE;
+      _franka_EE_T_K[id] = rs0.EE_T_K;
+      _franka_model_ready[id] = true;
+    }
+  }
+
+  // ============================================================================
+  // Step 4: Initialize Trajectory Interpolator
+  // ============================================================================
+
+  ref_pose = pose_fb;  // Start with current pose as reference
+
+  RUT::TaskSpaceInterpolationController intp_controller;
+  intp_controller.initialize(pose_fb, timer.toc_ms());
+  std::cout << header << "Trajectory interpolator initialized" << std::endl;
+
+  // ============================================================================
+  // Step 5: Signal Thread Ready and Initialize Profiling
+  // ============================================================================
+
+  {
+    std::lock_guard<std::mutex> lock(_ctrl_mtx);
+    _states_robot_thread_ready[id] = true;
+  }
+  std::cout << header << "Thread ready. Starting control loop." << std::endl;
+
+  RUT::Profiler loop_profiler;
+
+  // Statistics tracking for control performance analysis
+  uint64_t loop_count = 0;
+  uint64_t overrun_count = 0;
+  double max_overrun_ms = 0.0;
+  double total_overrun_ms = 0.0;
+  double last_franka_success_rate = 1.0;
+
+  // Counts how often the controller's leash or rate limit had to clamp the
+  // command. A high rate means the policy is commanding faster or further than
+  // the limits allow, which is worth seeing after a rollout.
+  uint64_t clamp_count = 0;
+
+  // Warn only once if a stiffness schedule arrives for a controller that has
+  // no stiffness to apply (e.g. the ACP runner pointed at a position config).
+  bool stiffness_schedule_warned = false;
+
+  // Loop timing control (1kHz for Franka)
+  RUT::Timer mock_loop_timer;
+  mock_loop_timer.set_loop_rate_hz(1000);
+  mock_loop_timer.start_timed_loop();
+
+  // ============================================================================
+  // MAIN CONTROL LOOP (1kHz Real-Time Control)
+  // ============================================================================
+
+  std::cout << header << "Entering 1kHz control loop" << std::endl;
+
+  while (true) {
+    loop_profiler.start();
+    RUT::TimePoint t_start;
+    double time_now_ms;
+
+    // ==========================================================================
+    // Phase 1: Update Robot State
+    // ==========================================================================
+
+    if (!_config.mock_hardware) {
+      franka_ptr->getCurrentPose(pose_fb);
+      franka_ptr->getCurrentWrenchTool(wrench_fb_ur);
+      state = franka_ptr->getRobotState();
+
+      time_now_ms = timer.toc_ms();
+
+      // Store current pose for other threads to query
+      loop_profiler.stop("compute");
+      loop_profiler.start();
+      {
+        std::lock_guard<std::mutex> lock(_poses_fb_mtxs[id]);
+        _poses_fb[id] = pose_fb;
+      }
+      loop_profiler.stop("lock");
+      loop_profiler.start();
+
+    } else {
+      // Mock hardware: the commanded pose becomes the feedback
+      time_now_ms = timer.toc_ms();
+      pose_fb = pose_robot_cmd;
+      wrench_fb_ur.setZero();
+    }
+
+    // ==========================================================================
+    // Phase 2: Log State to Data Buffers
+    // ==========================================================================
+
+    loop_profiler.stop("compute");
+    loop_profiler.start();
+
+    {
+      std::lock_guard<std::mutex> lock(_pose_buffer_mtxs[id]);
+      _pose_buffers[id].put(pose_fb);
+      _pose_timestamp_ms_buffers[id].put(time_now_ms);
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(_robot_wrench_buffer_mtxs[id]);
+      _robot_wrench_buffers[id].put(wrench_fb_ur);
+      _robot_wrench_timestamp_ms_buffers[id].put(time_now_ms);
+    }
+
+    loop_profiler.stop("lock");
+    loop_profiler.start();
+
+    // ==========================================================================
+    // Phase 3: Update Reference Trajectory from Waypoint Buffer
+    // ==========================================================================
+
+    if (!intp_controller.get_control(time_now_ms, ref_pose)) {
+      bool new_wp_found = false;
+
+      {
+        std::lock_guard<std::mutex> lock(_waypoints_buffer_mtxs[id]);
+
+        while (!_waypoints_buffers[id].is_empty()) {
+          pose_target_waypoint = _waypoints_buffers[id].pop();
+          double target_time_ms = _waypoints_timestamp_ms_buffers[id].pop();
+
+          if (target_time_ms > time_now_ms) {
+            intp_controller.set_new_target(pose_target_waypoint, target_time_ms);
+            new_wp_found = true;
+            break;
+          }
+        }
+      }
+
+      if (!new_wp_found) {
+        intp_controller.keep_the_last_target(time_now_ms);
+      }
+
+      intp_controller.get_control(time_now_ms, ref_pose);
+    }
+
+    loop_profiler.stop("intp_controller");
+    loop_profiler.start();
+
+    // ==========================================================================
+    // Phase 4: Discard Any Scheduled Stiffness
+    // ==========================================================================
+    // This controller has no stiffness to apply. The buffers are created with
+    // size -1, i.e. unbounded, so anything scheduled into them would otherwise
+    // accumulate for the whole run.
+
+    {
+      std::lock_guard<std::mutex> lock(_stiffness_buffer_mtxs[id]);
+      if (!_stiffness_buffers[id].is_empty()) {
+        if (!stiffness_schedule_warned) {
+          stiffness_schedule_warned = true;
+          std::cerr << "\033[33m";  // Yellow
+          std::cerr << header
+                    << "stiffness was scheduled but POSITION_CONTROLLER has no "
+                       "stiffness to apply; discarding. Bound contact force "
+                       "with the position_controller tracking leash instead."
+                    << std::endl;
+          std::cerr << "\033[0m";
+        }
+        _stiffness_buffers[id].clear();
+        _stiffness_timestamp_ms_buffers[id].clear();
+      }
+    }
+
+    loop_profiler.stop("stiffness");
+    loop_profiler.start();
+
+    // ==========================================================================
+    // Phase 5: Compute the Bounded Pose Command
+    // ==========================================================================
+
+    {
+      std::lock_guard<std::mutex> lock(_controller_mtxs[id]);
+      loop_profiler.stop("controller_lock");
+      loop_profiler.start();
+
+      _position_controllers[id].setRobotStatus(pose_fb, wrench_fb_ur);
+      _position_controllers[id].setRobotReference(ref_pose, wrench_WTr);
+
+      loop_profiler.stop("controller_set");
+      loop_profiler.start();
+
+      if (_position_controllers[id].step(pose_robot_cmd) != 0) {
+        clamp_count++;
+      }
+
+      loop_profiler.stop("controller_step");
+    }
+
+    // ==========================================================================
+    // Phase 6: Send Pose Command to Robot
+    // ==========================================================================
+    // setCartesian() low-passes and rate-limits internally (see
+    // FRANKA::Implementation::setCartesian) and is the blocking sync point.
+
+    loop_profiler.start();
+
+    if ((!_config.mock_hardware) && (!franka_ptr->setCartesian(pose_robot_cmd))) {
+      // Robot rejected command - emergency stop
+      std::cout << "\033[31m";  // Red color
+      std::cout << header << " setCartesian() failed - Emergency stop" << std::endl;
+      std::cout << header << "Last state:" << std::endl;
+      std::cout << header << "  Pose FB:   " << pose_fb.transpose() << std::endl;
+      std::cout << header << "  Wrench:    " << wrench_fb_ur.transpose() << std::endl;
+      std::cout << header << "  Reference: " << ref_pose.transpose() << std::endl;
+      std::cout << header << "  Pose CMD:  " << pose_robot_cmd.transpose() << std::endl;
+      std::cout << "\033[0m";  // Reset color
+      break;
+    }
+
+    loop_profiler.stop("franka_update");
+
+    // ==========================================================================
+    // Phase 7: High-Speed Data Logging (Lock-Free)
+    // ==========================================================================
+
+    loop_profiler.start();
+
+    if (_ctrl_flag_saving) {
+      std::lock_guard<std::mutex> lock(_logging_buffer_mtxs[id]);
+
+      if (!_logging_buffers[id].is_full()) {
+        RobotLogData log_data;
+        log_data.timestamp_ms = time_now_ms;
+        log_data.pose_fb = pose_fb;
+
+        for (int i = 0; i < 7; ++i) {
+          log_data.tau_J[i] = state.tau_J[i];
+          log_data.q[i] = state.q[i];
+          log_data.dq[i] = state.dq[i];
+        }
+        log_data.ddq = RUT::Vector7d::Zero();
+
+        _logging_buffers[id].put(log_data);
+        _logging_buffer_overflow[id].store(false);
+
+      } else {
+        if (!_logging_buffer_overflow[id].load()) {
+          _logging_buffer_overflow[id].store(true);
+          std::cerr << "\033[33m";  // Yellow
+          std::cerr << header << "⚠️  Logging buffer overflow - data loss!" << std::endl;
+          std::cerr << "\033[0m";
+        }
+      }
+    }
+    // See robot_impedance_loop: robot_logging_loop owns this flag.
+
+    loop_profiler.stop("logging");
+
+    // ==========================================================================
+    // Phase 8: Check Exit Condition
+    // ==========================================================================
+
+    loop_profiler.start();
+
+    {
+      std::lock_guard<std::mutex> lock(_ctrl_mtx);
+      if (!_ctrl_flag_running) {
+        std::cout << header << "Exit signal received. Shutting down control loop."
+                  << std::endl;
+        break;
+      }
+    }
+
+    loop_profiler.stop("lock");
+
+    // ==========================================================================
+    // Phase 9: Loop Timing and Performance Monitoring
+    // ==========================================================================
+
+    loop_count++;
+
+    if (_config.mock_hardware) {
+      mock_loop_timer.sleep_till_next();
+
+    } else {
+      if (loop_count % 1000 == 0) {
+        last_franka_success_rate = state.control_command_success_rate;
+
+        if (last_franka_success_rate < 0.95) {
+          std::cout << "\033[31m";  // Red
+          std::cout << header << "⚠️  WARNING: Franka success rate: "
+                    << (last_franka_success_rate * 100.0) << "% "
+                    << "(Local overruns: " << (100.0 * overrun_count / loop_count) << "%)"
+                    << std::endl;
+          std::cout << "\033[0m";
+        } else if (loop_count % 10000 == 0) {
+          std::cout << "\033[32m";  // Green
+          std::cout << header << "✅ Franka Success Rate: "
+                    << (last_franka_success_rate * 100.0) << "%" << std::endl;
+          std::cout << "\033[0m";
+        }
+      }
+
+      double overrun_ms = mock_loop_timer.check_for_overrun_ms(false);
+      if (overrun_ms > 0) {
+        overrun_count++;
+        total_overrun_ms += overrun_ms;
+        if (overrun_ms > max_overrun_ms) {
+          max_overrun_ms = overrun_ms;
+        }
+      }
+
+      mock_loop_timer.check_for_overrun_ms(false);  // Reset timer
+    }
+
+    loop_profiler.clear();
+
+  }  // End of control loop
+
+  // ============================================================================
+  // Control Loop Exit - Print Performance Statistics
+  // ============================================================================
+
+  std::cout << "\033[36m";  // Cyan color for visibility
+  std::cout << header << "═══════════════════════════════════════════════════" << std::endl;
+  std::cout << header << "📊 CONTROL LOOP PERFORMANCE STATISTICS" << std::endl;
+  std::cout << header << "═══════════════════════════════════════════════════" << std::endl;
+  std::cout << header << "  Total iterations:  " << loop_count << std::endl;
+  std::cout << header << "  Overrun count:     " << overrun_count
+            << " (" << (100.0 * overrun_count / loop_count) << "%)" << std::endl;
+
+  if (overrun_count > 0) {
+    std::cout << header << "  Average overrun:   "
+              << (total_overrun_ms / overrun_count) << " ms" << std::endl;
+    std::cout << header << "  Maximum overrun:   "
+              << max_overrun_ms << " ms" << std::endl;
+  }
+
+  std::cout << header << "  Non-finite cmds:   " << clamp_count << std::endl;
+  std::cout << header << "  Final Franka rate: "
+            << (last_franka_success_rate * 100.0) << "%" << std::endl;
+  std::cout << header << "═══════════════════════════════════════════════════" << std::endl;
+  std::cout << "\033[0m";  // Reset color
+
+  // Write out the controller's own pose log before the thread goes away
+  _position_controllers[id].flushLog();
+
+  // Signal other threads to stop
+  {
+    std::lock_guard<std::mutex> lock(_ctrl_mtx);
+    _ctrl_flag_running = false;
+  }
+
   std::cout << header << "Thread terminated." << std::endl;
 }
 
@@ -1080,6 +1534,9 @@ void ManipServer::eoat_loop(const RUT::TimePoint& time0, int id) {
     loop_timer.sleep_till_next();
   }  // end of while loop
 
+  // Same contract as the other loops: never leave the flag set behind us.
+  _states_eoat_thread_saving[id] = false;
+
   {
     std::lock_guard<std::mutex> lock(_ctrl_mtx);
     _ctrl_flag_running = false;
@@ -1339,6 +1796,9 @@ void ManipServer::joint_sensor_wrench_loop(const RUT::TimePoint& time0, int publ
     
   }  // End of republish loop
 
+  // Same contract as the other loops: never leave the flag set behind us.
+  _states_wrench_thread_saving[id] = false;
+
   // ============================================================================
   // Loop Exit - Final Statistics
   // ============================================================================
@@ -1492,11 +1952,47 @@ void ManipServer::ext_sensor_wrench_loop(const RUT::TimePoint& time0, int publis
     loop_timer.sleep_till_next();
   }  // end of while loop
 
+  // Same contract as the other loops: never leave the flag set behind us.
+  _states_wrench_thread_saving[id] = false;
+
   {
     std::lock_guard<std::mutex> lock(_ctrl_mtx);
     _ctrl_flag_running = false;
   }
   std::cout << "[wrench thread] Joined." << std::endl;
+}
+
+// Resize a camera frame to the policy input size with the SAME geometry the
+// training pipeline uses: PyriteUtility get_image_transform(), applied by
+// obs_rgb_preprocess() to the recorded full-resolution frames. Scale keeping
+// the aspect ratio until the short side fits, then centre-crop the long side.
+//
+// A plain cv::resize squashes instead, so a policy trained on cropped 848x480
+// RealSense frames would see a wider, 1.77x horizontally compressed view online.
+// Square frames (the GoPro, already cropped to 1080x1080 by its driver) need no
+// crop and take the original cv::resize call unchanged, i.e. bit-identical.
+//
+// Sizes are computed in integers: ceil(oh * iw / ih). Same values as the Python
+// float formula for every camera in use, without its rounding risk.
+// Interpolation stays INTER_LINEAR as before (training uses INTER_AREA).
+static void resize_keep_aspect_center_crop(const cv::Mat& in, cv::Mat& out,
+                                           int out_h, int out_w) {
+  const int64_t ih = in.rows, iw = in.cols;
+  int rw, rh;
+  if (iw * out_h >= int64_t(out_w) * ih) {  // input at least as wide as output
+    rh = out_h;
+    rw = static_cast<int>((int64_t(out_h) * iw + ih - 1) / ih);
+  } else {
+    rw = out_w;
+    rh = static_cast<int>((int64_t(out_w) * ih + iw - 1) / iw);
+  }
+  if (rw == out_w && rh == out_h) {
+    cv::resize(in, out, cv::Size(out_w, out_h), 0, 0, cv::INTER_LINEAR);
+    return;
+  }
+  cv::Mat scaled;
+  cv::resize(in, scaled, cv::Size(rw, rh), 0, 0, cv::INTER_LINEAR);
+  scaled(cv::Rect((rw - out_w) / 2, (rh - out_h) / 2, out_w, out_h)).copyTo(out);
 }
 
 // =============================================================================
@@ -1508,7 +2004,7 @@ void ManipServer::ext_sensor_wrench_loop(const RUT::TimePoint& time0, int publis
 //
 // Camera Pipeline:
 //   1. Capture frame from camera (blocking call at camera native FPS)
-//   2. Resize frame to configured output dimensions
+//   2. Resize to output_rgb_hw like training (keep aspect, centre-crop)
 //   3. Split BGR channels from OpenCV format
 //   4. Convert each channel to Eigen matrix
 //   5. Stack RGB channels into single matrix (for visualization/analysis)
@@ -1602,9 +2098,9 @@ void ManipServer::rgb_loop(const RUT::TimePoint& time0, int id) {
 
       time_now_ms = timer.toc_ms();
 
-      cv::resize(_color_mats[id], resized_color_mat,
-                 cv::Size(_config.output_rgb_hw[1], _config.output_rgb_hw[0]),
-                 cv::INTER_LINEAR);
+      resize_keep_aspect_center_crop(_color_mats[id], resized_color_mat,
+                                     _config.output_rgb_hw[0],
+                                     _config.output_rgb_hw[1]);
       cv::split(resized_color_mat, bgr);  // Split into B, G, R arrays
     }
 
@@ -1675,6 +2171,10 @@ void ManipServer::rgb_loop(const RUT::TimePoint& time0, int id) {
     loop_timer.sleep_till_next();
     
   }  // End of capture loop
+
+  // A loop that leaves mid-episode must drop its own saving flag:
+  // is_saving_data() polls these from the main thread.
+  _states_rgb_thread_saving[id] = false;
 
   // ============================================================================
   // Camera Loop Exit - Print Statistics
@@ -1998,6 +2498,7 @@ void ManipServer::robot_logging_loop(const RUT::TimePoint& time0, int id) {
         
         ctrl_flag_saving = true;
         frames_written = 0;
+        _states_robot_thread_saving[id] = true;
       }
 
       // =====================================================================
@@ -2214,6 +2715,16 @@ void ManipServer::robot_logging_loop(const RUT::TimePoint& time0, int id) {
     loop_timer.sleep_till_next();
     
   }  // End of logging loop
+
+  // Exiting with an episode still open (another thread cleared
+  // _ctrl_flag_running) leaves the three JSON streams unterminated. Say so,
+  // and clear the flag so the main thread's wait cannot hang on it.
+  if (ctrl_flag_saving) {
+    std::cerr << header
+              << "⚠️  Exited mid-episode: JSON streams were not finalized."
+              << std::endl;
+  }
+  _states_robot_thread_saving[id] = false;
 
   // ============================================================================
   // Logging Loop Exit - Print Statistics

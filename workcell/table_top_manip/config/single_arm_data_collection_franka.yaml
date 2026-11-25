@@ -7,7 +7,7 @@
 #    damping: low damping
 #    max_spring_force_magnitude: 15
 # always check the first few parameters:
-data_folder: "/home/robotlab/data/real/CAP5/curva"  # folder to save data
+data_folder: "/home/robotlab/data/real/CAP6/E1-camaras/realsense86/wipe"  # folder to save data
 mock_hardware: false
 bimanual: false
 num_cameras: 2
@@ -17,16 +17,16 @@ run_wrench_thread: True
 run_rgb_thread: True
 run_eoat_thread: false
 eoat_selection: "FRANKA_GRIPPER" # "FRANKA_GRIPPER" or "EOAT"
-teleop: False
-plot_rgb: False
-plot_wrench: False
+teleop: false
+plot_rgb: false
+plot_wrench: false
 
 rgb_buffer_size: 11
 robot_buffer_size: 1200 #duplicado ya que los datos se leen el doble de rapido.
 wrench_buffer_size: 1200 # reducido porquu la velocidad es de 1Khz 
 eoat_buffer_size: 600
 robot_selection: "FRANKA"  # "UR_RTDE" or "FRANKA"
-camera_selection: ["GOPRO", "REALSENSE"]
+camera_selection: ["GOPRO", "REALSENSE"] #["GOPRO", "REALSENSE", "USBCAM"] 
 force_sensing_mode: "JOINT_SENSORS"
 controller_selection: "IMPEDANCE_CONTROLLER"
 teleop_device: "GAMEPAD"  # "GAMEPAD", "GELLO" or "none"
@@ -36,10 +36,6 @@ output_rgb_hw: [224, 224]
 # inner joint sensor frequency (cant be changed for now because buffer synchronization)
 joint_sensor_frequency: 1000
 wrench_sensor_filter_alpha: 0.05  # Pre-filter on raw joint-sensor wrench (lower=smoother, higher=faster response)
-
-wrench_bias_filter:
-  enabled: false
-  model_path: "/home/robotlab/data/wrench_bias_models/wrench_bias.bin"
 
 # Force-adaptive stiffness for teleoperation.
 # Makes the demonstrated stiffness vary with contact force, so the offline
@@ -137,7 +133,15 @@ franka_gripper0:
     max_incre: 0.08
     safe_zone: [0.0, 0.08]       # gripper width range in meters
 
-realsense0: # Intel Realsense D405
+realsense0: # Intel Realsense D405 -- wrist
+  # camera_selection[0] is the wrist camera, the one that changes between
+  # experiments (REALSENSE / USBCAM / GOPRO); camera_selection[1] is always the
+  # external D415. Hence the two realsense blocks: realsense0 is read only when
+  # the wrist camera is a RealSense.
+  # Serials come from `rs-enumerate-devices -s`. Required with more than one
+  # camera: a pipeline with no serial takes the first connected device, so the
+  # second one fails with xioctl(VIDIOC_S_FMT) errno=16 Device or resource busy.
+  serial_number: "218622278970"
   width: 848
   height: 480
   framerate: 30
@@ -173,7 +177,7 @@ spacemouse0:
   update_rate_hz: 1000
 
 usbcam0:
-  device_name: "/dev/video7"
+  device_name: "/dev/video6"
   frame_width: 640
   frame_height: 480
   crop_rows: [-1, -1]
@@ -183,7 +187,8 @@ usbcam0:
   exposure_absolute: 200  # 100 x 100us = 10ms = 1/100s (fits in 16.7ms frame, one 50Hz half-cycle)
   cv_num_threads: 8
 
-realsense1:
+realsense1: # Intel Realsense D415 -- external, the fixed camera_selection[1]
+  serial_number: "314522063792"
   width: 848
   height: 480
   framerate: 30

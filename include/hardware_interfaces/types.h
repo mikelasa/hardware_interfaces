@@ -39,7 +39,7 @@ enum class RobotSelection {UR_RTDE, FRANKA };
 
 enum class EoatSelection { NONE, WSG, FRANKA_GRIPPER };
 
-enum class ControllerSelection {IMPEDANCE_CONTROLLER, ADMITTANCE_CONTROLLER };
+enum class ControllerSelection {IMPEDANCE_CONTROLLER, ADMITTANCE_CONTROLLER, POSITION_CONTROLLER };
 
 enum class TeleopSelection { NONE, SPACEMOUSE, GAMEPAD, GELLO };
 

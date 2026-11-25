@@ -9,6 +9,8 @@
 #ifndef _REALSENSE_HEADER_
 #define _REALSENSE_HEADER_
 
+#include <string>
+
 #include <yaml-cpp/yaml.h>
 #include <librealsense2/rs.hpp>
 #include <opencv2/opencv.hpp>
@@ -28,6 +30,11 @@ class Realsense : public CameraInterfaces {
     bool enable_color{true};
     bool enable_depth{true};
     bool align_depth_to_color{false};
+    // Which physical camera this pipeline binds to, as printed by
+    // `rs-enumerate-devices -s`. Optional with a single camera; required as
+    // soon as two run at once, because a pipeline with no device bound
+    // resolves to the first connected one.
+    std::string serial_number{""};
 
     bool deserialize(const YAML::Node& node) {
       try {
@@ -37,6 +44,8 @@ class Realsense : public CameraInterfaces {
         enable_color = node["enable_color"].as<bool>();
         enable_depth = node["enable_depth"].as<bool>();
         align_depth_to_color = node["align_depth_to_color"].as<bool>();
+        if (node["serial_number"])
+          serial_number = node["serial_number"].as<std::string>();
       } catch (const std::exception& e) {
         std::cerr << "Failed to load the config file: " << e.what()
                   << std::endl;
